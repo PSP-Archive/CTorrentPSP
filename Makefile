@@ -12,7 +12,7 @@ TARGET = ctorrentpsp
 LIBDIR =
 LDFLAGS =
 
-LIBS= -lSDL_ttf -lSDL_image -l freetype -ljpeg -lpng -lz -lm -lSDL -lpspgu -l psphprm -lpspaudio -lstdc++
+LIBS= -lSDL_ttf -lSDL_image -lfreetype -ljpeg -lpng -lz -lm -lSDL -lGL -lpspirkeyb -lpsppower -lpspvfpu -lpsprtc -lpspgu -lpsphprm -lpspaudio -lpspnet -lm -lstdc++
 
 PSP_EBOOT_ICON = icon0.png
 PSP_EBOOT_PIC1 = pic1.png

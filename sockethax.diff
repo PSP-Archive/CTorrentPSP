@@ -1,0 +1,200 @@
+Index: tracker.cpp
+===================================================================
+--- tracker.cpp	(revision 17)
++++ tracker.cpp	(working copy)
+@@ -242,7 +242,7 @@
+   if( !q ){
+     int error = 0;
+     socklen_t n = sizeof(error);
+-    if( getsockopt(m_sock, SOL_SOCKET,SO_ERROR,&error,&n) < 0 )
++	if( sceNetInetGetsockopt(m_sock, SOL_SOCKET,SO_ERROR,&error,&n) < 0 )
+       error = errno;
+     if( error != 0 ) CONSOLE.Warning(2,
+       "warn, received nothing from tracker:  %s", strerror(error));
+@@ -392,7 +392,7 @@
+     return -1;
+   }
+ 
+-  m_sock = socket(AF_INET,SOCK_STREAM,0);
++  m_sock = sceNetInetSocket(AF_INET,SOCK_STREAM,0);
+   if(INVALID_SOCKET == m_sock) return -1;
+ 
+   // we only need to bind if we have specified an ip
+@@ -408,7 +408,7 @@
+     // set the defined ip from the commandline
+     addr.sin_addr.s_addr = cfg_listen_ip;
+     // bind it or return...
+-    if(bind(m_sock,(struct sockaddr*)&addr,sizeof(struct sockaddr_in)) != 0){
++	if(sceNetInetBind(m_sock,(struct sockaddr*)&addr,sizeof(struct sockaddr_in)) != 0){
+       CONSOLE.Warning(1, "warn, can't set up tracker connection:  %s",
+         strerror(errno));
+       return -1;
+@@ -533,7 +533,7 @@
+       (*nfds)--;
+       FD_CLR(m_sock, rfdnextp);
+     }
+-    if(getsockopt(m_sock, SOL_SOCKET,SO_ERROR,&error,&n) < 0)
++	if(sceNetInetGetsockopt(m_sock, SOL_SOCKET,SO_ERROR,&error,&n) < 0)
+       error = errno;
+     if( error ){
+       if( ECONNREFUSED == error ){
+@@ -553,7 +553,7 @@
+     socklen_t n = sizeof(error);
+     (*nfds)--;
+     FD_CLR(m_sock, rfdnextp);
+-    if(getsockopt(m_sock, SOL_SOCKET,SO_ERROR,&error,&n) < 0)
++	if(sceNetInetGetsockopt(m_sock, SOL_SOCKET,SO_ERROR,&error,&n) < 0)
+       error = errno;
+     CONSOLE.Warning(2, "warn, connect to tracker failed:  %s", strerror(error));
+     Reset(15);
+Index: ctorrent.cpp
+===================================================================
+--- ctorrent.cpp	(revision 29)
++++ ctorrent.cpp	(working copy)
+@@ -167,7 +167,7 @@
+ 		sceUtilityLoadNetModule(3);
+ 		pspSdkInetInit();
+ 	
+-/*	char name[100];
++	char name[100];
+ 	for (int iNetIndex = 1; iNetIndex < 100; iNetIndex++) // skip the 0th connection
+ 	{
+ 		if (sceUtilityCheckNetParam(iNetIndex) != 0)
+@@ -175,12 +175,12 @@
+ 		sceUtilityGetNetParam(iNetIndex, 0, (netData*)name);
+ 		printf("%i %s\n", iNetIndex, name);
+ 	}
+-	connect_to_apctl(2);
++	connect_to_apctl(1);
+ 	
+ 	char szMyIPAddr[32];
+ 	if (sceNetApctlGetInfo(8, szMyIPAddr) != 0)
+ 		strcpy(szMyIPAddr, "unknown IP address");
+-	printf("IP: %s\n", szMyIPAddr);*/
++	printf("IP: %s\n", szMyIPAddr);
+ #endif	
+ 	
+ 	argv[argc-1] = UI_Instance.Initialise();
+Index: UI.cpp
+===================================================================
+--- UI.cpp	(revision 28)
++++ UI.cpp	(working copy)
+@@ -119,7 +119,7 @@
+ 	char* res = GetTorrentFromUser();
+ 	
+ 	
+-	SwitchState(UIS_ConnectDialog);
++	SwitchState(UIS_Viewing);
+ 	
+ 	//Boot the UI thread!
+ 	mThread = SDL_CreateThread(UI_Thread_Function, NULL);
+Index: downloader.cpp
+===================================================================
+--- downloader.cpp	(revision 17)
++++ downloader.cpp	(working copy)
+@@ -102,7 +102,7 @@
+     timeout.tv_usec = (long)( (maxsleep-(long)maxsleep) * 1000000 );
+ 
+     WORLD.UnLate();
+-    nfds = select(maxfd + 1,&rfd,&wfd,(fd_set*) 0,&timeout);
++	nfds = sceNetInetSelect(maxfd + 1,&rfd,&wfd,(fd_set*) 0,&timeout);
+ 
+     if( f_poll ) f_poll = 0;
+     else if( nfds > 0 ) WORLD.DontWaitBW();
+Index: peerlist.cpp
+===================================================================
+--- peerlist.cpp	(revision 17)
++++ peerlist.cpp	(working copy)
+@@ -136,7 +136,7 @@
+   }
+ 
+   if( INVALID_SOCKET == sk ){
+-    if( INVALID_SOCKET == (sk = socket(AF_INET,SOCK_STREAM,0)) ) return -1;
++	  if( INVALID_SOCKET == (sk = sceNetInetSocket(AF_INET,SOCK_STREAM,0)) ) return -1;
+ 
+     if( setfd_nonblock(sk) < 0) goto err;
+ 
+@@ -681,7 +681,7 @@
+   socklen_t addrlen;
+   struct sockaddr_in addr;
+   addrlen = sizeof(struct sockaddr_in);
+-  newsk = accept(m_listen_sock,(struct sockaddr*) &addr,&addrlen);
++  newsk = sceNetInetAccept(m_listen_sock,(struct sockaddr*) &addr,&addrlen);
+ //  CONSOLE.Debug("incoming! %s:%hu",
+ //    inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+ 
+@@ -709,7 +709,7 @@
+   lis_addr.sin_addr.s_addr = INADDR_ANY;
+   strcpy(m_listen, "n/a");
+ 
+-  m_listen_sock = socket(AF_INET,SOCK_STREAM,0);
++  m_listen_sock = sceNetInetSocket(AF_INET,SOCK_STREAM,0);
+ 
+   if( INVALID_SOCKET == m_listen_sock ) return -1;
+ 
+@@ -718,7 +718,7 @@
+ 
+   if(cfg_listen_port){
+     lis_addr.sin_port = htons(cfg_listen_port);
+-    if( bind(m_listen_sock, (struct sockaddr*)&lis_addr,
++	if( sceNetInetBind(m_listen_sock, (struct sockaddr*)&lis_addr,
+         sizeof(struct sockaddr_in)) == 0 ) 
+       r = 1;
+     else
+@@ -737,7 +737,7 @@
+     cfg_listen_port = cfg_max_listen_port;
+     for( ; r != 0; ){
+       lis_addr.sin_port = htons(cfg_listen_port);
+-      r = bind(m_listen_sock, (struct sockaddr*)&lis_addr,
++	  r = sceNetInetBind(m_listen_sock, (struct sockaddr*)&lis_addr,
+         sizeof(struct sockaddr_in));
+       if(r != 0){
+         cfg_listen_port--;
+Index: def.h
+===================================================================
+--- def.h	(revision 17)
++++ def.h	(working copy)
+@@ -26,7 +26,7 @@
+ 
+ #else		// if *Nix *****************************
+ 
+-#define CLOSE_SOCKET(sk) close((sk))
++#define CLOSE_SOCKET(sk) sceNetInetClose((sk))
+ 
+ #ifndef SOCKET
+ typedef int SOCKET;
+@@ -35,8 +35,8 @@
+ #define INVALID_SOCKET -1
+ 
+ #define PATH_SP '/'
+-#define RECV(fd,buf,len) read((fd),(buf),(len))
+-#define SEND(fd,buf,len) write((fd),(buf),(len))
++#define RECV(fd,buf,len) sceNetInetRecv((fd),(buf),(len), 0)
++#define SEND(fd,buf,len) sceNetInetSend((fd),(buf),(len), 0)
+ 
+ #include <sys/select.h>
+ #define MAXHOSTNAMELEN 255
+Index: connect_nonb.cpp
+===================================================================
+--- connect_nonb.cpp	(revision 17)
++++ connect_nonb.cpp	(working copy)
+@@ -2,14 +2,14 @@
+ 
+ #include <errno.h>
+ 
+-// ·µ»ØÖµ 
+-// >0 Á¬½ÓÒÑ³É¹¦
+-// -1 Á¬½ÓÒÑÊ§°Ü
+-// -2 Á¬½ÓÕýÔÚ½øÐÐ
++// ï¿½ï¿½ï¿½ï¿½Öµ 
++// >0 ï¿½ï¿½ï¿½ï¿½Ñ³É¹ï¿½
++// -1 ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½
++// -2 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú½ï¿½ï¿½ï¿½
+ int connect_nonb(SOCKET sk,struct sockaddr* psa)
+ {
+   int r;
+-  r = connect(sk,psa,sizeof(struct sockaddr));
++  r = sceNetInetConnect(sk,psa,sizeof(struct sockaddr));
+   if(r < 0 && errno == EINPROGRESS) r = -2;
+   return r;
+ }

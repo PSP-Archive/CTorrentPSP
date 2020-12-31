@@ -1,0 +1,52 @@
+This is a port and a bit of Enhanced CTorrent to PSP by danzel (danzelatlocalhostdotgeekdotnz)
+Enhanced CTorrent: http://www.rahul.net/dholmes/ctorrent/
+CTorrentPSP: http://localhost.geek.nz
+
+The features supported are fairly minimal (No protocol encryption, https support, peer exchange, etc)
+You can download torrents from thepiratebay.org, I've used it as my test site.
+
+I tried to port libtorrent and libtorrent.ro before trying to port ctorrent.
+It should be possible to port transmission (might need some work on the pthreads port however), but seriously, torrenting on PSP? You are crazy!
+
+The PSP networking stack really isn't designed for running torrents, I've limited peers to 20 to attempt to alleviate this, but it still causes problems some times.
+
+========== Usage ==========
+- Put .torrent file in torrents/ folder
+- Run CTorrentPSP
+- Choose the torrent to download
+- Choose the Access point to connect to
+- Wait for file to download
+- Keep waiting
+- Wait some more
+- zzzzzzzz
+- Quit
+
+Files are downloaded straight into the ctorrentpsp folder, so don't try download anything that will overwrite those files as it will probably fail!
+
+========== Controls ==========
+==== Torrent/Connection Menu ====
+Up/Down - Select item
+X/O - Choose item
+
+==== Download screen ====
+Up/Down - scroll up/down
+Left/Right - scroll left/right
+
+========== UI Layout ==========
+The numbers at the bottom of the download UI are as follows:
+
+Connected Seeds/Connected Peers/Total Peers
+Total Downloaded/Total Uploaded
+Download Speed/Upload Speek
+Percentage Complete (Total)
+
+
+========== Known Issues ==========
+Downloads stop
+ This usually occurs when a download is going fast (~60k/s), the transfer stops and usually doesn't start up again.
+ Either wait to see if it starts itself again or quit and restart CTorrentPSP.
+
+The Interface is boring and there is nothing to do while downloading
+ Seriously... Guy.... Go outside or read a book or something, stop using your PSP for such stupid things as torrents and play a game on it!
+
+The bitfield isn't saved to disk, as such when you quit and relaunch it has to rescan all of the files for complete chunks. I don't plan on fixing this (or any other problems)

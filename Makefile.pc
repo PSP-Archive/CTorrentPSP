@@ -1,0 +1,15 @@
+CFLAGS= -DHAVE_CONFIG_H -Wall -g -fsingle-precision-constant
+CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti -DTIXML_USE_STL
+ASFLAGS = $(CFLAGS) -c
+
+OBJS=bencode.o bitfield.o btconfig.o btcontent.o btfiles.o btrequest.o btstream.o bufio.o compat.o connect_nonb.o console.o ctcs.o ctorrent.o downloader.o httpencode.o iplist.o peerlist.o peer.o rate.o setnonblock.o sha1.o sigint.o tracker.o
+
+OBJS+=UI.o
+
+LIBS=-lSDL -lSDL_image -lSDL_ttf
+
+ctorrent.bin: $(OBJS)
+	g++ -o ctorrent.bin $(CXXFLAGS) $(OBJS) $(LIBS)
+
+clean:
+	rm -f $(OBJS) ctorrent.bin

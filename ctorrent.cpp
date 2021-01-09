@@ -25,6 +25,10 @@
 
 #include "./config.h"
 
+#ifndef HAVE_RANDOM
+#include "compat.h"
+#endif
+
 #ifndef WINDOWS
 #include "sigint.h"
 #endif
@@ -58,6 +62,7 @@ int APIENTRY WinMain(HINSTANCE hInstance,
 }
 
 #else
+
 void Random_init()
 {
   unsigned long seed;
@@ -205,11 +210,11 @@ int main(/*int argc, char **argv*/)
 
   if( arg_flg_make_torrent ){
     if( !arg_announce ){
-      CONSOLE.Warning(1, "please use -u to specify a announce url!");
+      CONSOLE.Warning(1, "Please use -u to specify an announce URL!");
       exit(1);
     }
     if( !arg_save_as ){
-      CONSOLE.Warning(1, "please use -s to specify a metainfo file name!");
+      CONSOLE.Warning(1, "Please use -s to specify a metainfo file name!");
       exit(1);
     }
     if( BTCONTENT.InitialFromFS(arg_metainfo_file, arg_announce,
@@ -218,7 +223,7 @@ int main(/*int argc, char **argv*/)
       CONSOLE.Warning(1, "create metainfo failed.");
       exit(1);
     }
-    CONSOLE.Print("create metainfo file %s successful.", arg_save_as);
+    CONSOLE.Print("Create metainfo file %s successful.", arg_save_as);
     exit(0);
   }
 
@@ -237,7 +242,10 @@ int main(/*int argc, char **argv*/)
       CONSOLE.Warning(2, "warn, you can't accept connections.");
     }
 
-    Tracker.Initial();
+    if( Tracker.Initial() < 0 ){
+      CONSOLE.Warning(1, "error, tracker setup failed.");
+      exit(1);
+    }
 
     sig_setup();  // setup signal handling
     CONSOLE.Interact(
@@ -248,13 +256,7 @@ int main(/*int argc, char **argv*/)
   if( !arg_flg_exam_only ) BTCONTENT.SaveBitfield();
   WORLD.CloseAll();
 
-  if(arg_verbose)
-    CONSOLE.Debug( "%.2f CPU seconds used; %lu seconds elapsed (%.2f%% usage)",
-      clock() / (double)CLOCKS_PER_SEC,
-      (unsigned long)(time((time_t *)0) - BTCONTENT.GetStartTime()),
-      clock() / (double)CLOCKS_PER_SEC /
-        (time((time_t *)0) - BTCONTENT.GetStartTime()) * 100 );
-
+  if(arg_verbose) CONSOLE.cpu();
   exit(0);
 }
 
@@ -262,12 +264,16 @@ int main(/*int argc, char **argv*/)
 
 int param_check(int argc, char **argv)
 {
+  const char *opts;
   int c, l;
-  while( (c=getopt(argc,argv,
-            "aA:b:cC:dD:e:E:fi:l:M:m:n:P:p:s:S:tTu:U:vxX:z:hH"))
-           != -1 )
+
+  if( 0==strncmp(argv[1], "-t", 2) )
+    opts = "tc:l:ps:u:";
+  else opts = "aA:b:cC:dD:e:E:fi:I:M:m:n:P:p:s:S:Tu:U:vxX:z:hH";
+
+  while( (c=getopt(argc, argv, opts)) != -1 )
     switch( c ){
-	  printf("switch(%c)\n", c);
+		printf("switch(%c)\n", c);
     case 'a':
       arg_allocate = 1;
       break;
@@ -284,8 +290,15 @@ int param_check(int argc, char **argv)
       cfg_listen_ip = inet_addr(optarg);
       break;
 
+    case 'I':			// set public ip XXXX
+      cfg_public_ip = new char[strlen(optarg) + 1];
+      if( !cfg_public_ip ) return -1;
+      strcpy(cfg_public_ip, optarg);
+      break;
+
     case 'p':			// listen on Port XXXX
-      cfg_listen_port = atoi(optarg);
+      if( arg_flg_make_torrent ) arg_flg_private = 1;
+      else cfg_listen_port = atoi(optarg);
       break;
 
     case 's':			// Save as FILE/DIR NAME
@@ -306,7 +319,11 @@ int param_check(int argc, char **argv)
       break;
 
     case 'c':			// Check exist only
-      arg_flg_check_only = 1;
+      if( arg_flg_make_torrent ){
+        arg_comment = new char[strlen(optarg) + 1];
+        if( !arg_comment ) return -1;
+        strcpy(arg_comment, optarg);
+      }else arg_flg_check_only = 1;
       break;
 
     case 'C':			// Max cache size
@@ -383,7 +400,7 @@ int param_check(int argc, char **argv)
       break;
 
      // BELOW OPTIONS USED FOR CREATE TORRENT.
-    case 'u':			// Announce url
+    case 'u':			// Announce URL
       if( arg_announce ) return -1;  // specified twice
       arg_announce = new char[strlen(optarg) + 1];
 #ifndef WINDOWS
@@ -394,6 +411,7 @@ int param_check(int argc, char **argv)
 
     case 't':			// make Torrent
       arg_flg_make_torrent = 1;
+      CONSOLE.ChangeChannel(O_INPUT, "off", 0);
       break;
 
     case 'l':			// piece Length (default 262144)
@@ -408,6 +426,7 @@ int param_check(int argc, char **argv)
 
     case 'x':			// print torrent information only
       arg_flg_exam_only = 1;
+      CONSOLE.ChangeChannel(O_INPUT, "off", 0);
       break;
 
     case 'S':			// CTCS server
@@ -445,7 +464,7 @@ int param_check(int argc, char **argv)
       break;
 
     case 'd':			// daemon mode (fork to background)
-      arg_daemon = 1;
+      arg_daemon++;
       break;
 
     case 'h':
@@ -478,7 +497,7 @@ int param_check(int argc, char **argv)
   if( !arg_bitfield_file ){
     arg_bitfield_file = new char[strlen(arg_metainfo_file) + 4];
 #ifndef WINDOWS
-	if( !arg_bitfield_file ) { printf("!arg_bitfield_file\n"); return -1; }
+    if( !arg_bitfield_file ) { printf("!arg_bitfield_file\n"); return -1; }
 #endif
     strcpy(arg_bitfield_file, arg_metainfo_file);
     strcat(arg_bitfield_file, ".bf");
@@ -489,6 +508,7 @@ int param_check(int argc, char **argv)
 
 void usage()
 {
+  CONSOLE.ChangeChannel(O_INPUT, "off", 0);
   fprintf(stderr,"%s   Original code Copyright: YuHong(992126018601033)\n",
     PACKAGE_STRING);
   fprintf(stderr,"WARNING: THERE IS NO WARRANTY FOR CTorrent. USE AT YOUR OWN RISK!!!\n");
@@ -508,6 +528,10 @@ void usage()
     "Listen for connections on specific IP address (default all/any)");
   fprintf(stderr, "%-15s %s\n", "-p port",
     "Listen port (default 2706 -> 2106)");
+  fprintf(stderr, "%-15s %s\n", "-I ip",
+    "Specify public/external IP address for peer connections");
+  fprintf(stderr, "%-15s %s\n", "-u num or URL",
+    "Use an alternate announce (tracker) URL");
   fprintf(stderr, "%-15s %s\n", "-s filename",
     "Download (\"save as\") to a different file or directory");
   fprintf(stderr, "%-15s %s\n", "-C cache_size",
@@ -537,13 +561,16 @@ void usage()
   fprintf(stderr, "%-15s %s\n", "-X command",
     "Run command upon download completion (\"user exit\")");
   fprintf(stderr, "%-15s %s\n", "-d", "Daemon mode (fork to background)");
+  fprintf(stderr, "%-15s %s\n", "-dd", "Daemon mode with I/O redirection");
 
   fprintf(stderr,"\nMake metainfo (torrent) file options:\n");
   fprintf(stderr, "%-15s %s\n", "-t", "Create a new torrent file");
-  fprintf(stderr, "%-15s %s\n", "-u url", "Tracker's url");
+  fprintf(stderr, "%-15s %s\n", "-u URL", "Tracker's URL");
   fprintf(stderr, "%-15s %s\n", "-l piece_len",
     "Piece length (default 262144)");
   fprintf(stderr, "%-15s %s\n", "-s filename", "Specify metainfo file name");
+  fprintf(stderr, "%-15s %s\n", "-p", "Private (disable peer exchange)");
+  fprintf(stderr, "%-15s %s\n", "-c comment", "Include a comment/description");
 
   fprintf(stderr,"\nExample:\n");
   fprintf(stderr,"ctorrent -s new_filename -e 12 -C 32 -p 6881 example.torrent\n");

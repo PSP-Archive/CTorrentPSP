@@ -39,8 +39,8 @@ class RequestQueue
   int IsValidRequest(size_t idx,size_t off,size_t len) const;
 
   void operator=(RequestQueue &rq);
-  int Copy(RequestQueue *prq);
-  int CopyShuffle(RequestQueue *prq, size_t piece);
+  int Copy(const RequestQueue *prq, size_t idx);
+  int CopyShuffle(const RequestQueue *prq, size_t idx);
   size_t Qsize() const;
   size_t Qlen(size_t piece) const;
   int LastSlice() const;
@@ -52,7 +52,9 @@ class RequestQueue
   int Append(PSLICE ps);
   int Remove(size_t idx,size_t off,size_t len);
   int Requeue(size_t idx,size_t off,size_t len);
+  void MoveLast(PSLICE ps);
   int HasIdx(size_t idx) const;
+  int HasSlice(size_t idx, size_t off, size_t len) const;
   time_t GetReqTime(size_t idx,size_t off,size_t len) const;
   void SetReqTime(PSLICE n,time_t t);
 
@@ -78,8 +80,9 @@ class PendingQueue
   ~PendingQueue();
   void Empty();
   int Pending(RequestQueue *prq);
-  int ReAssign(RequestQueue *prq, BitField &bf);
+  size_t ReAssign(RequestQueue *prq, BitField &bf);
   int Exist(size_t idx) const;
+  int HasSlice(size_t idx, size_t off, size_t len);
   int Delete(size_t idx);
   int DeleteSlice(size_t idx, size_t off, size_t len);
 };

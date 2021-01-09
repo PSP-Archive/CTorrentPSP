@@ -8,6 +8,14 @@
 #include <errno.h>
 #include <ctype.h>      // isdigit()
 #include <signal.h>
+#include <fcntl.h>      // open()
+#include <time.h>       // clock()
+
+#if defined(HAVE_IOCTL_H)
+#include <ioctl.h>      // ioctl()
+#elif defined(HAVE_SYS_IOCTL_H)
+#include <sys/ioctl.h>
+#endif
 
 #include "btconfig.h"
 #include "ctcs.h"
@@ -26,7 +34,7 @@
 
 #include "UI.h"
 
-// console.cpp:  Copyright 2007 Dennis Holmes  (dholmes@rahul.net)
+// console.cpp:  Copyright 2007-2008 Dennis Holmes  (dholmes@rahul.net)
 
 // input mode definitions
 #define K_CHARS 0
@@ -35,6 +43,7 @@
 const char LIVE_CHAR[4] = {'-', '\\','|','/'};
 
 Console CONSOLE;
+static int g_console_ready = 0;
 
 
 //===========================================================================
@@ -45,6 +54,7 @@ ConStream::ConStream()
 {
   m_stream = (FILE *)0;
   m_name = (char *)0;
+  m_restore = 0;
   m_newline = 1;
   m_suspend = 0;
   m_inputmode = K_LINES;
@@ -53,6 +63,7 @@ ConStream::ConStream()
 
 ConStream::~ConStream()
 {
+  if( m_restore ) RestoreMode();
   if( !m_suspend ) _newline();
   if( m_stream ) fclose(m_stream);
   if( m_name ) delete []m_name;
@@ -75,7 +86,7 @@ void ConStream::Associate(FILE *stream, const char *name, int mode)
   m_filemode = mode;
   if( (m_name = new char[strlen(name)+1]) )
     strcpy(m_name, name);
-  else CONSOLE.Warning(1, "Failed to allocate memory for output filename.");
+  else Error(1, "Failed to allocate memory for output filename.");
 }
 
 
@@ -100,29 +111,41 @@ int ConStream::IsTTY() const
 
 void ConStream::PreserveMode()
 {
+  int r;
+
   if( !IsTTY() ) return;
 
 #if defined(USE_TERMIOS)
-  tcgetattr(Fileno(), &m_original);
+  r = tcgetattr(Fileno(), &m_original);
 #elif defined(USE_TERMIO)
-  ioctl(Fileno(), TCGETA, &m_original);
+  r = ioctl(Fileno(), TCGETA, &m_original);
 #elif defined(USE_SGTTY)
-  gtty(Fileno(), &m_original);
+  r = gtty(Fileno(), &m_original);
 #endif
+  if( r < 0 ){
+    Error(1, "Error preserving terminal mode on fd %d:  %s", Fileno(),
+      strerror(errno));
+  }else m_restore = 1;
 }
 
 
 void ConStream::RestoreMode()
 {
+  int r;
+
   if( !IsTTY() ) return;
 
 #if defined(USE_TERMIOS)
-  tcsetattr(Fileno(), TCSANOW, &m_original);
+  r = tcsetattr(Fileno(), TCSANOW, &m_original);
 #elif defined(USE_TERMIO)
-  ioctl(Fileno(), TCSETA, &m_original);
+  r = ioctl(Fileno(), TCSETA, &m_original);
 #elif defined(USE_SGTTY)
-  stty(Fileno(), &m_original);
+  r = stty(Fileno(), &m_original);
 #endif
+  if( r < 0 ){
+    Error(1, "Error restoring terminal mode on fd %d:  %s", Fileno(),
+      strerror(errno));
+  }
 }
 
 
@@ -205,7 +228,7 @@ int ConStream::Output_n(const char *message, va_list ap)
   if( m_suspend ) return 0;
 
   int old_newline = m_newline;
-  if( !*message ) _newline();
+  if( !message || !*message ) _newline();
   else _convprintf(message, ap);
   fflush(m_stream);
   return (old_newline==m_newline) ? 0 : 1;
@@ -258,6 +281,25 @@ inline int ConStream::_convprintf(const char *format, va_list ap)
 }
 
 
+/* ConStream functions need to call Error instead of CONSOLE.Warning, because
+   CONSOLE may not be initialized yet (or may have been destroyed already).
+*/
+void ConStream::Error(int sev, const char *message, ...)
+{
+  va_list ap;
+
+  va_start(ap, message);
+  /* Note the call to Warning sends only the literal message--a limitation to
+     deal with later. */
+  if( g_console_ready ) CONSOLE.Warning(sev, message);
+  else{
+    vfprintf(stderr, message, ap);
+    fflush(stderr);
+  }
+  va_end(ap);
+}
+
+
 
 //===========================================================================
 // Console class functions
@@ -281,6 +323,8 @@ Console::Console()
     exit(1);
   }
 
+  m_status_len = 80;
+
   m_stdout.Associate(stdout, "stdout", 1);
   m_stderr.Associate(stderr, "stderr", 1);
   m_stdin.Associate(stdin, "stdin", 0);
@@ -295,12 +339,14 @@ Console::Console()
   m_streams[O_INPUT]->PreserveMode();
   m_streams[O_INPUT]->SetInputMode(K_CHARS);
   m_conmode = K_CHARS;
+
+  if( this == &CONSOLE ) g_console_ready = 1;
 }
 
 
 Console::~Console()
 {
-  m_streams[O_INPUT]->RestoreMode();
+  if( this == &CONSOLE ) g_console_ready = 0;
 }
 
 
@@ -348,7 +394,7 @@ void Console::User(fd_set *rfdp, fd_set *wfdp, int *nready,
             if( arg_file_to_download ) delete []arg_file_to_download;
             arg_file_to_download = new char[strlen(param) + 1];
             if( !arg_file_to_download )
-              CONSOLE.Warning(1, "error, failed to allocate memory for option");
+              Warning(1, "error, failed to allocate memory for option");
             else strcpy(arg_file_to_download, param);
             BTCONTENT.SetFilter();
             break;
@@ -357,14 +403,18 @@ void Console::User(fd_set *rfdp, fd_set *wfdp, int *nready,
               Interact("Invalid input");
             else{
               if( arg_ctcs ) delete []arg_ctcs;
-              arg_ctcs = new char[strlen(param) + 1];
-              if( !arg_ctcs )
-                CONSOLE.Warning(1,
-                  "error, failed to allocate memory for option");
-              else{
-                strcpy(arg_ctcs, param);
-                CTCS.Initial();
-                CTCS.Reset(1);
+              if(0==strcmp(":", param)){
+                if(arg_ctcs) CTCS.Reset(1);
+                arg_ctcs = (char*) 0;
+              }else{
+                arg_ctcs = new char[strlen(param) + 1];
+                if( !arg_ctcs )
+                  Warning(1, "error, failed to allocate memory for option");
+                else{
+                  strcpy(arg_ctcs, param);
+                  CTCS.Initial();
+                  CTCS.Reset(1);
+                }
               }
             }
             break;
@@ -372,7 +422,7 @@ void Console::User(fd_set *rfdp, fd_set *wfdp, int *nready,
             if( arg_completion_exit ) delete []arg_completion_exit;
             arg_completion_exit = new char[strlen(param) + 1];
             if( !arg_completion_exit )
-              CONSOLE.Warning(1, "error, failed to allocate memory for option");
+              Warning(1, "error, failed to allocate memory for option");
             else strcpy(arg_completion_exit, param);
             break;
           case 'Q':				// quit
@@ -436,6 +486,7 @@ void Console::User(fd_set *rfdp, fd_set *wfdp, int *nready,
         break;
       case 'd':				// download bw limit
       case 'u':				// upload bw limit
+        if(arg_ctcs) Interact("Note, changes may be overridden by CTCS.");
       case 'e':				// seed time
       case 'E':				// seed ratio
       case 'm':				// min peers
@@ -445,27 +496,37 @@ void Console::User(fd_set *rfdp, fd_set *wfdp, int *nready,
         Interact_n("");
         break;
       case 'n':				// get1file
-        m_streams[O_INPUT]->SetInputMode(K_LINES);
-        ShowFiles();
-        Interact("Enter 0 or * for all files (normal behavior).");
-        if( arg_file_to_download )
-          Interact_n("Get file number/list (currently %s): ",
-            arg_file_to_download);
-        else Interact_n("Get file number/list: ");
+        if( BTCONTENT.IsFull() )
+          Interact("Download is already complete.");
+        else{
+          m_streams[O_INPUT]->SetInputMode(K_LINES);
+          ShowFiles();
+          Interact("Enter 0 or * for all files (normal behavior).");
+          if( arg_file_to_download )
+            Interact_n("Get file number/list (currently %s): ",
+              arg_file_to_download);
+          else Interact_n("Get file number/list: ");
+        }
         break;
       case 'S':				// CTCS server
         m_streams[O_INPUT]->SetInputMode(K_LINES);
         Interact_n("");
-        if( arg_ctcs )
+        if( arg_ctcs ){
+          Interact("Enter ':' to stop using CTCS.");
           Interact_n("CTCS server:port (currently %s): ", arg_ctcs);
+        }
         else Interact_n("CTCS server:port: ");
         break;
       case 'X':				// completion command (user exit)
-        m_streams[O_INPUT]->SetInputMode(K_LINES);
-        Interact("Enter a command to run upon download completion.");
-        if( arg_completion_exit )
-          Interact("Currently: %s", arg_completion_exit);
-        Interact_n(">");
+        if( BTCONTENT.IsFull() )
+          Interact("Download is already complete.");
+        else{
+          m_streams[O_INPUT]->SetInputMode(K_LINES);
+          Interact("Enter a command to run upon download completion.");
+          if( arg_completion_exit )
+            Interact("Currently: %s", arg_completion_exit);
+          Interact_n(">");
+        }
         break;
       case 'v':				// verbose
         if( arg_verbose && !m_streams[O_INPUT]->SameDev(m_streams[O_DEBUG]) )
@@ -583,7 +644,7 @@ int Console::OperatorMenu(const char *param)
     char buffer[80];
     Interact(" Status Line Formats:");
     for( int i=0; i < STATUSLINES; i++ ){
-      (CONSOLE.*m_statusline[i])(buffer, sizeof(buffer));
+      (this->*m_statusline[i])(buffer, sizeof(buffer));
       Interact(" %c%d) %s", (i==m_status_format) ? '*' : ' ', ++n_opt, buffer);
     }
     Interact(" Other options:");
@@ -593,6 +654,8 @@ int Console::OperatorMenu(const char *param)
     else Interact(" %2d) Pause (suspend upload/download)", ++n_opt);
     if( !arg_daemon )
       Interact(" %2d) Become daemon (fork to background)", ++n_opt);
+    Interact(" %2d) Update tracker stats & get peers", ++n_opt);
+    Interact(" %2d) Restart (recover) the tracker session", ++n_opt);
     Interact_n("Enter selection: ");
     m_streams[O_INPUT]->SetInputMode(K_LINES);
     oper_mode = 1;
@@ -621,6 +684,7 @@ int Console::OperatorMenu(const char *param)
       oper_mode = 0;
       return OperatorMenu("");
     }else if( sel == 1 + O_NCHANNELS+1 + STATUSLINES ){  // detailed status
+      m_streams[O_INPUT]->SetInputMode(K_CHARS);
       Interact("");
       Interact("Torrent: %s", arg_metainfo_file);
       ShowFiles();
@@ -633,9 +697,28 @@ int Console::OperatorMenu(const char *param)
       Interact("  Upload rate: %dB/s   Limit: %dB/s   Total: %llu",
         (int)(Self.RateUL()), (int)cfg_max_bandwidth_up,
         (unsigned long long)(Self.TotalUL()));
+      time_t t = Tracker.GetReportTime();
+      if( t ){
+        char s[42];
+#ifdef HAVE_CTIME_R_3
+        ctime_r(&t, s, sizeof(s));
+#else
+        ctime_r(&t, s);
+#endif
+        if( s[strlen(s)-1] == '\n' ) s[strlen(s)-1] = '\0';
+        Interact("Reported to tracker: %llu up",
+          (unsigned long long)(Tracker.GetReportUL()));
+        Interact("                     %llu down at %s",
+          (unsigned long long)(Tracker.GetReportDL()), s);
+      }
+      Interact("Failed hashes: %d    Dup blocks: %d    Unwanted blocks: %d",
+        (int)(BTCONTENT.GetHashFailures()), (int)(BTCONTENT.GetDupBlocks()),
+        (int)(BTCONTENT.GetUnwantedBlocks()));
+      Interact("");
       Interact("Peers: %d   Min: %d   Max: %d",
         (int)(WORLD.GetPeersCount()), (int)cfg_min_peers, (int)cfg_max_peers);
       Interact("Listening on: %s", WORLD.GetListen());
+      Interact("Announce URL: %s", BTCONTENT.GetAnnounce());
       Interact("");
       Interact("Ratio: %.2f   Seed time: %luh   Seed ratio: %.2f",
         (double)(Self.TotalUL()) / ( Self.TotalDL() ? Self.TotalDL() :
@@ -645,6 +728,7 @@ int Console::OperatorMenu(const char *param)
         (int)(BTCONTENT.CacheUsed()/1024), (int)(BTCONTENT.CacheSize()/1024),
         (int)cfg_cache_size);
       if(arg_ctcs) Interact("CTCS Server: %s", arg_ctcs);
+      if(arg_verbose) cpu();
       oper_mode = 0;
       return 1;
     }else if( sel == 2 + O_NCHANNELS+1 + STATUSLINES ){  // pause/resume
@@ -654,6 +738,15 @@ int Console::OperatorMenu(const char *param)
       return 1;
     }else if( sel == 3 + O_NCHANNELS+1 + STATUSLINES ){  // daemon
       Daemonize();
+      oper_mode = 0;
+      return 1;
+    }else if( sel == 4 + O_NCHANNELS+1 + STATUSLINES ){  // update tracker
+      if( Tracker.GetStatus() == T_FREE ) Tracker.Reset(15);
+      else Interact("Already connecting, please be patient...");
+      oper_mode = 0;
+      return 1;
+    }else if( sel == 5 + O_NCHANNELS+1 + STATUSLINES ){  // update tracker
+      Tracker.RestartTracker();
       oper_mode = 0;
       return 1;
     }
@@ -673,7 +766,7 @@ int Console::OperatorMenu(const char *param)
 }
 
 
-int Console::ChangeChannel(int channel, const char *param)
+int Console::ChangeChannel(int channel, const char *param, int notify)
 {
   ConStream *dest = (ConStream *)0;
 
@@ -717,7 +810,7 @@ int Console::ChangeChannel(int channel, const char *param)
       if( !in_use ) delete m_streams[channel];
       else if( O_INPUT==channel ) m_streams[O_INPUT]->RestoreMode();
     }
-    if( !arg_daemon || !m_streams[channel]->IsTTY() ){
+    if( notify && (!arg_daemon || !m_streams[channel]->IsTTY()) ){
       switch(channel){
       case O_NORMAL:
         Print("Output channel is now %s", dest->GetName());
@@ -773,11 +866,35 @@ void Console::Status(int immediate)
     else if( !m_streams[O_NORMAL]->IsSuspended() ||
              (arg_verbose && !m_streams[O_DEBUG]->IsSuspended()) ){
       // optimized to generate the status line only if it will be output
-		UI_Instance.QueueRedraw();
-      (CONSOLE.*m_statusline[m_status_format])(buffer, sizeof(buffer));
+      UI_Instance.QueueRedraw();
+      (this->*m_statusline[m_status_format])(buffer, sizeof(buffer));
 
       if( !m_status_last ) Print_n("");
-      Update("%*s", -(int)sizeof(buffer)+1, buffer);
+      int tmplen = 0;
+      if( m_streams[O_NORMAL]->IsTTY() ){
+#ifdef TIOCGWINSZ
+        struct winsize tsize;
+        if( ioctl(m_streams[O_NORMAL]->Fileno(), TIOCGWINSZ, &tsize) >= 0 )
+          tmplen = tsize.ws_col - 1;
+#else
+#ifdef TIOCGSIZE
+        struct ttysize tsize;
+        if( ioctl(m_streams[O_NORMAL]->Fileno(), TIOCGSIZE, &tsize) >= 0 )
+          tmplen = tsize.ts_cols - 1;
+#else
+#ifdef WIOCGETD
+        struct uwdata tsize;
+        if( ioctl(m_streams[O_NORMAL]->Fileno(), WIOCGETD, &tsize) >= 0 )
+          tmplen = tsize.uw_width / tsize.uw_hs - 1;
+#endif
+#endif
+#endif
+        if( tmplen > 80 ) tmplen = 80;
+      }
+      int len = strlen(buffer);
+      if( 0==tmplen ) tmplen = (len < m_status_len) ? m_status_len : len;
+      m_status_len = len;
+      Update("%*.*s", -tmplen, tmplen, buffer);
       m_status_last = 1;
 
       if(arg_verbose)
@@ -839,8 +956,9 @@ void Console::StatusLine0(char buffer[], size_t length)
 
     (Tracker.GetStatus()==T_CONNECTING) ? "Connecting" :
       ( (Tracker.GetStatus()==T_READY) ? "Connected" :
-          (Tracker.IsQuitting() ? "Quitting" :
-           (WORLD.IsPaused() ? "Paused" : checked)) )
+          (Tracker.IsRestarting() ? "Restarting" :
+            (Tracker.IsQuitting() ? "Quitting" :
+              (WORLD.IsPaused() ? "Paused" : checked))) )
   );
 }
 
@@ -929,6 +1047,12 @@ void Console::StatusLine1(char buffer[], size_t length)
       snprintf(timeleft, sizeof(timeleft), "%d:%2.2d",
         (int)(remain / 60), (int)(remain % 60));
     else strcpy(timeleft, ">999hr");
+  }else if( BTCONTENT.CheckedPieces() < BTCONTENT.GetNPieces() ){
+    // Don't say stalled if still checking and nothing to download yet.
+    BitField tmpBitfield = *BTCONTENT.pBChecked;
+    tmpBitfield.Except(BTCONTENT.pBF);
+    if(tmpBitfield.IsEmpty()) strcpy(timeleft, "unknown");
+    else strcpy(timeleft, "stalled");
   }else strcpy(timeleft, "stalled");
 
   snprintf(buffer, length,
@@ -956,8 +1080,9 @@ void Console::StatusLine1(char buffer[], size_t length)
 
     (Tracker.GetStatus()==T_CONNECTING) ? "Connecting" :
       ( (Tracker.GetStatus()==T_READY) ? "Connected" :
-          (Tracker.IsQuitting() ? "Quitting" :
-           (WORLD.IsPaused() ? "Paused" : checked)) )
+          (Tracker.IsRestarting() ? "Restarting" :
+            (Tracker.IsQuitting() ? "Quitting" :
+              (WORLD.IsPaused() ? "Paused" : checked))) )
   );
 }
 
@@ -991,7 +1116,7 @@ void Console::Print_n(const char *message, ...)
 {
   va_list ap;
 
-  if( m_status_last && *message ) Print_n("");
+  if( m_status_last && message && *message ) Print_n("");
   m_status_last = 0;
 
   if( K_LINES != m_streams[O_INPUT]->GetInputMode() ||
@@ -1114,10 +1239,10 @@ void Console::Debug_n(const char *message, ...)
       (!m_streams[O_DEBUG]->SameDev(m_streams[O_INTERACT]) &&
        !m_streams[O_DEBUG]->SameDev(m_streams[O_INPUT])) ){
     if( m_streams[O_DEBUG]->SameDev(m_streams[O_NORMAL]) ){
-      if( m_status_last && *message ) Debug_n("");
+      if( m_status_last && message && *message ) Debug_n("");
       m_status_last = 0;
     }
-    if( f_new_line && *message ){
+    if( f_new_line && message && *message ){
       char *format = (char *)0;
       size_t buflen;
       size_t need = strlen(message)+1 + 10*sizeof(unsigned long)/4;
@@ -1138,7 +1263,7 @@ void Console::Debug_n(const char *message, ...)
       va_end(ap);
     }
 
-    if( *message ) f_new_line = 0;
+    if( message && *message ) f_new_line = 0;
     else f_new_line = 1;
   }
 }
@@ -1163,7 +1288,7 @@ void Console::Interact_n(const char *message, ...)
   va_list ap;
 
   if( m_streams[O_INTERACT]->SameDev(m_streams[O_NORMAL]) ){
-    if( m_status_last && *message ) Interact_n("");
+    if( m_status_last && message && *message ) Interact_n("");
     m_status_last = 0;
   }
   va_start(ap, message);
@@ -1194,9 +1319,9 @@ void Console::InteractU(const char *message, ...)
 char *Console::Input(const char *prompt, char *field, size_t length)
 {
   char *retval;
+  Interact_n("");
+  Interact_n("%s", prompt);
   m_streams[O_INPUT]->SetInputMode(K_LINES);
-  Interact_n(0, "");
-  Interact_n(0, "%s", prompt);
   retval = m_streams[O_INPUT]->Input(field, length);
   m_streams[O_INPUT]->SetInputMode(K_CHARS);
   return retval;
@@ -1209,6 +1334,17 @@ void Console::SyncNewlines(int master)
     if( i != master && m_streams[i]->SameDev(m_streams[master]) )
       m_streams[i]->SyncNewline(m_streams[master]);
   }
+}
+
+
+void Console::cpu()
+{
+  if(arg_verbose)
+    Debug( "%.2f CPU seconds used; %lu seconds elapsed (%.2f%% usage)",
+      clock() / (double)CLOCKS_PER_SEC,
+      (unsigned long)(time((time_t *)0) - BTCONTENT.GetStartTime()),
+      clock() / (double)CLOCKS_PER_SEC /
+        (time((time_t *)0) - BTCONTENT.GetStartTime()) * 100 );
 }
 
 
@@ -1249,6 +1385,7 @@ void Console::Daemonize()
 #ifdef HAVE_WORKING_FORK
   size_t orig_cache_size = 0;
   pid_t r;
+  int nullfd = -1;
 
   if( cfg_cache_size && BTCONTENT.CacheUsed() ){
     orig_cache_size = cfg_cache_size;
@@ -1257,29 +1394,29 @@ void Console::Daemonize()
   }
 
   if( (r = fork()) < 0 ){
-    CONSOLE.Warning(2, "warn, fork to background failed:  %s", strerror(errno));
+    Warning(2, "warn, fork to background failed:  %s", strerror(errno));
     arg_daemon = 0;
     goto restorecache;
   }else if(r) exit(EXIT_SUCCESS);
-  arg_daemon = 1;
+  if( !arg_daemon ) arg_daemon = 1;
 
   for( int i=0; i <= O_NCHANNELS; i++ ){
-    if( m_streams[i]->IsTTY() && ChangeChannel(i, "off") < 0 )
+    if( m_streams[i]->IsTTY() && ChangeChannel(i, "off", 0) < 0 )
       m_streams[i]->Suspend();
   }
-  if( m_stdout.IsTTY() ) m_stdout.Close();
-  if( m_stderr.IsTTY() ) m_stderr.Close();
-  if( m_stdin.IsTTY() ) m_stdin.Close();
+  nullfd = OpenNull(nullfd, &m_stdin, 0);
+  nullfd = OpenNull(nullfd, &m_stdout, 1);
+  nullfd = OpenNull(nullfd, &m_stderr, 2);
 
   if( setsid() < 0 ){
-    CONSOLE.Warning(2,
+    Warning(2,
       "warn, failed to create new session (continuing in background):  %s",
       strerror(errno));
     goto restorecache;
   }
 
   if( (r = fork()) < 0 ){
-    CONSOLE.Warning(2,
+    Warning(2,
       "warn, final fork failed (continuing in background):  %s",
       strerror(errno));
     goto restorecache;
@@ -1292,5 +1429,22 @@ void Console::Daemonize()
     BTCONTENT.CacheConfigure();
   }
 #endif
+}
+
+
+int Console::OpenNull(int nullfd, ConStream *stream, int sfd)
+{
+  if( stream->IsTTY() || arg_daemon == 1 ){
+    int mfd = stream->Fileno();
+    if( mfd < 0 ) mfd = sfd;
+    stream->Close();
+    if( nullfd < 0 ) nullfd = open("/dev/null", O_RDWR);
+    if( nullfd >= 0 && nullfd != mfd ) {
+     //dup2(nullfd, mfd); //replaced for:
+     close (mfd);
+     fcntl(nullfd, F_DUPFD, mfd);
+    }
+  }
+  return nullfd;
 }
 

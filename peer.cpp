@@ -86,8 +86,7 @@ int btPeer::Need_Local_Data() const
 
 int btPeer::Need_Remote_Data() const
 {
-
-  if( BTCONTENT.Seeding() ) return 0;
+  if( BTCONTENT.Seeding() || bitfield.IsEmpty() ) return 0;
   else if( bitfield.IsFull() &&
     BTCONTENT.CheckedPieces() >= BTCONTENT.GetNPieces() ) return 1;
   else{
@@ -110,7 +109,7 @@ btPeer::btPeer()
   m_state.remote_interested = m_state.local_interested = 0;
 
   m_err_count = 0;
-  m_cached_idx = BTCONTENT.GetNPieces();
+  m_cached_idx = m_last_req_piece = BTCONTENT.GetNPieces();
   m_standby = 0;
   m_req_send = 5;
   m_req_out = 0;
@@ -180,7 +179,7 @@ int btPeer::SetLocal(unsigned char s)
     if(arg_verbose) CONSOLE.Debug("Not interested in %p", this);
     m_state.local_interested = 0; 
     if( !request_q.IsEmpty() ){
-      if( CancelRequest(request_q.GetHead()) < 0 ) return -1;
+      if( CancelRequest() < 0 ) return -1;
       request_q.Empty();
     }
     break;
@@ -207,8 +206,14 @@ int btPeer::RequestPiece()
 
   tmpBitfield = bitfield;
   tmpBitfield.Except(*BTCONTENT.pBMasterFilter);
-  if( PENDINGQUEUE.ReAssign(&request_q, tmpBitfield) ){
-    if(arg_verbose) CONSOLE.Debug("Assigning to %p from Pending", this);
+  if( m_last_req_piece < BTCONTENT.GetNPieces() && tmpBitfield.Count() > 1 )
+    tmpBitfield.UnSet(m_last_req_piece);
+  if( (idx = PENDINGQUEUE.ReAssign(&request_q, tmpBitfield)) <
+      BTCONTENT.GetNPieces() ){
+    if(arg_verbose)
+      CONSOLE.Debug("Assigning #%d to %p from Pending", (int)idx, this);
+    if( BTCONTENT.pBMultPeer->IsSet(idx) ) WORLD.CompareRequest(this, idx);
+    BTCONTENT.pBMultPeer->Set(idx);
     return SendRequest();
   }
 
@@ -238,17 +243,24 @@ int btPeer::RequestPiece()
         pfilter = BTCONTENT.GetNextFilter(pfilter);
       }
     }while( pfilter && tmpBitfield.IsEmpty() );
-    idx = WORLD.What_Can_Duplicate(tmpBitfield, this, BTCONTENT.GetNPieces());
-    if( idx < BTCONTENT.GetNPieces() ){
-      if(arg_verbose) CONSOLE.Debug("Want to dup #%d to %p", (int)idx, this);
-      btPeer *peer = WORLD.WhoHas(idx);
-      if(peer){
-        if(arg_verbose) CONSOLE.Debug("Duping: %p to %p (#%d)",
-          peer, this, (int)idx);
-        if(request_q.CopyShuffle(&peer->request_q, idx) < 0) return -1;
-        else return SendRequest();
-      }
-    }else if(arg_verbose) CONSOLE.Debug("Nothing to dup to %p", this);
+    if( m_latency < 60 ){
+      // Don't dup to very slow/high latency peers.
+      if( m_last_req_piece < BTCONTENT.GetNPieces() && tmpBitfield.Count() > 1 )
+        tmpBitfield.UnSet(m_last_req_piece);
+      idx = WORLD.What_Can_Duplicate(tmpBitfield, this, BTCONTENT.GetNPieces());
+      if( idx < BTCONTENT.GetNPieces() ){
+        if(arg_verbose) CONSOLE.Debug("Want to dup #%d to %p", (int)idx, this);
+        btPeer *peer = WORLD.WhoHas(idx);
+        if(peer){
+          if(arg_verbose) CONSOLE.Debug("Duping #%d from %p to %p",
+            (int)idx, peer, this);
+          if( request_q.CopyShuffle(&peer->request_q, idx) < 0 ) return -1;
+          WORLD.CompareRequest(this, idx);
+          BTCONTENT.pBMultPeer->Set(idx);
+          return SendRequest();
+        }
+      }else if(arg_verbose) CONSOLE.Debug("Nothing to dup to %p", this);
+    }
   }
 
   // Doesn't have a piece that's already in progress--choose another.
@@ -264,10 +276,23 @@ int btPeer::RequestPiece()
     tmpBitfield.And(*BTCONTENT.pBChecked);
     // tmpBitfield tells what we need from this peer...
   }while( pfilter && tmpBitfield.IsEmpty() );
+  if( m_last_req_piece < BTCONTENT.GetNPieces() && tmpBitfield.Count() > 1 )
+    tmpBitfield.UnSet(m_last_req_piece);
 
   if( tmpBitfield.IsEmpty() ){
-    // We don't need anything from the peer.  How'd we get here?
-    return SetLocal(M_NOT_INTERESTED);
+    // We don't need to request anything from the peer.
+    if( !Need_Remote_Data() )
+      return SetLocal(M_NOT_INTERESTED);
+    else if( m_last_req_piece < BTCONTENT.GetNPieces() &&
+             !BTCONTENT.pBF->IsSet(m_last_req_piece) ){
+      // May have excluded the only viable request; allow a retry.
+      m_last_req_piece = BTCONTENT.GetNPieces();
+      return 0;  // Allow another peer a shot at it first.
+    }else{
+      if(arg_verbose) CONSOLE.Debug("%p standby", this);
+      m_standby = 1;  // nothing to do at the moment
+      return 0;
+    }
   }
 
   BitField tmpBitfield2 = tmpBitfield;
@@ -275,7 +300,9 @@ int btPeer::RequestPiece()
   // [tmpBitfield2] ...that we haven't requested from anyone.
   if( tmpBitfield2.IsEmpty() ){
     // Everything this peer has that I want, I've already requested.
-    if( WORLD.Endgame() ){  // OK to duplicate a request.
+    int endgame = WORLD.Endgame();
+    if( endgame && m_latency < 60 ){
+      // OK to duplicate a request, but not to very slow/high latency peers.
 //    idx = tmpBitfield.Random();
       idx = 0;  // flag for Who_Can_Duplicate()
       BitField tmpBitfield3 = tmpBitfield2;
@@ -284,28 +311,32 @@ int btPeer::RequestPiece()
         if(arg_verbose) CONSOLE.Debug("Want to dup #%d to %p",
           (int)idx, this);
         btPeer *peer = WORLD.WhoHas(idx);
-        if(peer){
-          if(arg_verbose) CONSOLE.Debug("Duping: %p to %p (#%d)",
-            peer, this, (int)idx);
-          if(request_q.CopyShuffle(&peer->request_q, idx) < 0) return -1;
-          else return SendRequest();
+        if(peer){  // failsafe
+          if(arg_verbose) CONSOLE.Debug("Duping #%d from %p to %p",
+            (int)idx, peer, this);
+          if( request_q.CopyShuffle(&peer->request_q, idx) < 0 ) return -1;
+          WORLD.CompareRequest(this, idx);
+          BTCONTENT.pBMultPeer->Set(idx);
+          return SendRequest();
         }
-      }else if(arg_verbose) CONSOLE.Debug("Nothing to dup to %p", this);
-    }else{  // not endgame mode
-      btPeer *peer = WORLD.Who_Can_Abandon(this); // slowest choice
-      if(peer){
-        // Cancel a request to the slowest peer & request it from this one.
-        if(arg_verbose) CONSOLE.Debug("Reassigning %p to %p (#%d)",
-          peer, this, (int)(peer->request_q.GetRequestIdx()));
-        // RequestQueue class "moves" rather than "copies" in assignment!
-        if( request_q.Copy(&peer->request_q) < 0 ) return -1;
-        if(peer->CancelPiece() < 0 || peer->RequestCheck() < 0)
-          peer->CloseConnection();
-        return SendRequest();
-      }else if( BTCONTENT.CheckedPieces() >= BTCONTENT.GetNPieces() ){
-        if(arg_verbose) CONSOLE.Debug("%p standby", this);
-        m_standby = 1;  // nothing to do at the moment
       }
+    }
+    btPeer *peer;
+    if( request_q.IsEmpty() && (peer = WORLD.Who_Can_Abandon(this)) ){
+      // Cancel a request to the slowest peer & request it from this one.
+      idx = peer->FindLastCommonRequest(bitfield);
+      if(arg_verbose) CONSOLE.Debug("Reassigning #%d from %p to %p",
+        (int)idx, peer, this);
+      // RequestQueue class "moves" rather than "copies" in assignment!
+      if( request_q.Copy(&peer->request_q, idx) < 0 ) return -1;
+      WORLD.CompareRequest(this, idx);
+      BTCONTENT.pBMultPeer->Set(idx);
+      if( endgame ) peer->UnStandby();
+      if( peer->CancelPiece(idx) < 0 ) peer->CloseConnection();
+      return SendRequest();
+    }else if( BTCONTENT.CheckedPieces() >= BTCONTENT.GetNPieces() ){
+      if(arg_verbose) CONSOLE.Debug("%p standby", this);
+      m_standby = 1;  // nothing to do at the moment
     }
   }else{
     // Request something that we haven't requested yet (most common case).
@@ -342,32 +373,32 @@ int btPeer::MsgDeliver()
       if(H_BASE_LEN != r) return -1;
       if(arg_verbose) CONSOLE.Debug("%p choked me", this);
       if( m_lastmsg == M_UNCHOKE && m_last_timestamp <= m_choketime+1 ){
-        m_err_count+=2;
-        if(arg_verbose) CONSOLE.Debug("err: %p (%d) Choke oscillation",
-          this, m_err_count);
+        if( PeerError(2, "Choke oscillation") < 0 ) return -1;
       }
       m_choketime = m_last_timestamp;
       m_state.remote_choked = 1;
       StopDLTimer();
       if( g_next_dn == this ) g_next_dn = (btPeer *)0;
       if( !request_q.IsEmpty() ){
-        m_req_out = 0;
-        PENDINGQUEUE.Pending(&request_q);
+        BTCONTENT.pBMultPeer->Set(request_q.GetRequestIdx());
+        PutPending();
       }
+      m_cancel_time = now;
       break;
 
     case M_UNCHOKE:
       if(H_BASE_LEN != r) return -1;
       if(arg_verbose) CONSOLE.Debug("%p unchoked me", this);
       if( m_lastmsg == M_CHOKE && m_last_timestamp <= m_choketime+1 ){
-        m_err_count+=2;
-        if(arg_verbose) CONSOLE.Debug("err: %p (%d) Choke oscillation",
-          this, m_err_count);
+        if( PeerError(2, "Choke oscillation") < 0 ) return -1;
       }
       m_choketime = m_last_timestamp;
       m_state.remote_choked = 0;
-      m_prefetch_completion = 0;
-      retval = RequestCheck();
+      m_standby = 0;
+      if( !stream.PeekNextMessage(M_CHOKE) ){
+        m_prefetch_completion = 0;
+        retval = RequestCheck();
+      }
       break;
 
     case M_INTERESTED:
@@ -435,9 +466,7 @@ int btPeer::MsgDeliver()
       if( m_state.local_choked ){
         if( m_last_timestamp - m_unchoke_timestamp >
               (m_latency ? (int)(m_latency*2) : 60) ){
-          m_err_count++;
-          if(arg_verbose) CONSOLE.Debug("err: %p (%d) choked request",
-            this, m_err_count);
+          if( PeerError(1, "choked request") < 0 ) return -1;
           if( stream.Send_State(M_CHOKE) < 0 ) return -1;
           // This will mess with the unchoke rotation (to this peer's
           // disadvantage), but otherwise we may spam them with choke msgs.
@@ -473,12 +502,16 @@ int btPeer::MsgDeliver()
         return -1;
       bitfield.SetReferBuffer(msgbuf + H_LEN + H_BASE_LEN);
       if(bitfield.IsFull()){
-        if(arg_verbose) CONSOLE.Debug("%p is a seed", this);
+        if(arg_verbose) CONSOLE.Debug("%p is a seed (bitfield is full)", this);
         if(BTCONTENT.IsFull()) return -2;
         else{
           stream.out_buffer.SetSize(BUF_DEF_SIZ);
           if( !m_want_again ) m_want_again = 1;
         }
+      }else if(arg_verbose){
+        if( bitfield.IsEmpty() ) CONSOLE.Debug("%p bitfield is empty", this);
+        else CONSOLE.Debug("%p bitfield has %d%%", this,
+                           100 * bitfield.Count() / BTCONTENT.GetNPieces());
       }
 
       // This is needed in order to set our Interested state.
@@ -495,9 +528,7 @@ int btPeer::MsgDeliver()
         if( m_state.local_choked &&
             m_last_timestamp - m_unchoke_timestamp >
               (m_latency ? (int)(m_latency*2) : 60) ){
-          m_err_count++;
-          if(arg_verbose) CONSOLE.Debug("err: %p (%d) Bad cancel",
-            this, m_err_count);
+          if( PeerError(1, "Bad cancel") < 0 ) return -1;
         }
       }else if( reponse_q.IsEmpty() && g_next_up == this )
         g_next_up = (btPeer *)0;
@@ -522,6 +553,11 @@ int btPeer::ReponseSlice()
   size_t idx,off;
   reponse_q.Pop(&idx,&off,&len);
 
+  if( BTCONTENT.global_buffer_size < len ){
+    delete []BTCONTENT.global_piece_buffer;
+    BTCONTENT.global_piece_buffer = new char[len];
+    BTCONTENT.global_buffer_size = BTCONTENT.global_piece_buffer ? len : 0;
+  }
   retval = BTCONTENT.ReadSlice(BTCONTENT.global_piece_buffer,idx,off,len);
   if( retval < 0 ) return -1;
   else if( retval && cfg_cache_size ) Self.OntimeUL(0);  // disk read delay
@@ -532,11 +568,12 @@ int btPeer::ReponseSlice()
     (int)idx, (int)off, (int)len, this);
   // project the time to send another slice
   if( 0==currentrate ){  // don't know peer's rate; use best guess
+    // These are "int" for signed calculations below.
     int rate = (int)(Self.RateUL());
-    int unchoked = (int)(WORLD.GetUnchoked());
-    if( unchoked < 1 ) unchoked = 1;
-    if( 0==cfg_max_bandwidth_up ){
-      if( 0==rate ) m_next_send_time = now;
+    int unchoked = (int)(WORLD.GetUnchoked());  // can't be 0 here
+    if( cfg_max_bandwidth_up < unchoked || cfg_max_bandwidth_up <= rate ){
+      if( rate < unchoked || rate < (unchoked*len)/3600 )
+        m_next_send_time = now;
       else m_next_send_time = now + len / (rate / unchoked);
     }else{
       m_next_send_time = now + len /
@@ -588,18 +625,14 @@ int btPeer::SendRequest()
       } else request_q.SetReqTime(ps, (time_t)0);
       if(arg_verbose) CONSOLE.Debug_n(".");
       if(stream.Send_Request(ps->index,ps->offset,ps->length) < 0){ return -1; }
+      m_last_req_piece = ps->index;
       request_q.SetNextSend(ps->next);
       m_req_out++;
     }
     if(arg_verbose) CONSOLE.Debug_n("");
     m_receive_time = now;
   }
-  return ( m_req_out < m_req_send ) ? RequestPiece() : 0;
-}
-
-int btPeer::CancelPiece()
-{
-  return CancelPiece(request_q.GetHead()->index);
+  return ( m_req_out < m_req_send && !m_standby ) ? RequestPiece() : 0;
 }
 
 int btPeer::CancelPiece(size_t idx)
@@ -608,7 +641,10 @@ int btPeer::CancelPiece(size_t idx)
   PSLICE next;
   int cancel = 1;
 
-  for( ; ps && ps->index != idx; ps=ps->next );  // find the piece
+  for( ; ps && ps->index != idx; ps=ps->next ){  // find the piece
+    if( ps == request_q.NextSend() ) cancel = 0;
+  }
+  if( !ps ) return 0;
 
   for( ; ps; ps = next ){
     if( ps->index != idx ) break;
@@ -629,13 +665,20 @@ int btPeer::CancelPiece(size_t idx)
     next = ps->next;
     request_q.Remove(ps->index, ps->offset, ps->length);
   }
+  if( request_q.IsEmpty() ){
+    StopDLTimer();
+    m_standby = 0;
+  }
   if( !m_req_out && g_next_dn == this ) g_next_dn = (btPeer *)0;
 
-  return 0;
+  return 1;
 }
 
-int btPeer::CancelRequest(PSLICE ps)
+int btPeer::CancelRequest()
 {
+  PSLICE ps;
+
+  ps = request_q.GetHead();
   for( ; ps; ps = ps->next){
     if( ps == request_q.NextSend() ) break;
     if(arg_verbose) CONSOLE.Debug("Cancelling %d/%d/%d to %p",
@@ -660,11 +703,15 @@ int btPeer::CancelSliceRequest(size_t idx, size_t off, size_t len)
   PSLICE ps;
   int cancel = 1;
   int idxfound = 0;
+  int retval = 0;
+
+  if( request_q.IsEmpty() ) return 0;
 
   for(ps = request_q.GetHead(); ps; ps = ps->next){
     if( ps == request_q.NextSend() ) cancel = 0;
     if( idx == ps->index ){
       if( off == ps->offset && len == ps->length ){
+        retval = 1;
         request_q.Remove(idx,off,len);
         if(cancel){
           if(arg_verbose) CONSOLE.Debug("Cancelling %d/%d/%d to %p",
@@ -688,15 +735,38 @@ int btPeer::CancelSliceRequest(size_t idx, size_t off, size_t len)
       idxfound = 1;
     }else if( idxfound ) break;
   }
-  return 0;
+  if( request_q.IsEmpty() ){ 
+    StopDLTimer();
+    m_standby = 0;
+  }
+
+  return retval;
 }
 
-int btPeer::ReportComplete(size_t idx)
+size_t btPeer::FindLastCommonRequest(BitField &proposerbf)
+{
+  PSLICE ps;
+  size_t idx, piece;
+
+  idx = piece = BTCONTENT.GetNPieces();
+  if( request_q.IsEmpty() ) return piece;
+  ps = request_q.GetHead();
+  for( ; ps; ps = ps->next ){
+    if( ps->index != idx ){
+      idx = ps->index;
+      if( proposerbf.IsSet(idx) ) piece = idx;
+    }
+  }
+  return piece;
+}
+
+int btPeer::ReportComplete(size_t idx, size_t len)
 {
   int r;
 
   if( (r = BTCONTENT.APieceComplete(idx)) > 0 ){
     if(arg_verbose) CONSOLE.Debug("Piece #%d completed", (int)idx);
+    PeerError(-1, "Piece completed");
     WORLD.Tell_World_I_Have(idx);
     BTCONTENT.CheckFilter();
     if( BTCONTENT.IsFull() )
@@ -704,27 +774,35 @@ int btPeer::ReportComplete(size_t idx)
   }else if( 0 == r ){  // hash check failed
     // Don't count an error against the peer in initial or endgame mode, since
     // some slices may have come from other peers.
-    if( BTCONTENT.pBF->Count() < 2 || WORLD.Endgame() ){
-      m_err_count++;
-      if(arg_verbose) CONSOLE.Debug("err: %p (%d) Bad complete",
-        this, m_err_count);
-      ResetDLTimer(); // set peer rate=0 so we don't favor for upload
+    if( !BTCONTENT.pBMultPeer->IsSet(idx) ){
+      // The entire piece came from this peer.
+      DataUnRec(BTCONTENT.GetPieceLength(idx) - len);
+      if( PeerError(4, "Bad complete") < 0 ) CloseConnection();
+      else{
+        ResetDLTimer();  // set peer rate=0 so we don't favor for upload
+        bitfield.UnSet(idx);  // don't request this piece from this peer again
+      }
     }
   }
   // Need to re-download entire piece if check failed, so cleanup in any case.
   m_prefetch_completion = 0;
-  // We don't track request duplication accurately, so clean up just in case.
-  WORLD.CancelPiece(idx);
-  PENDINGQUEUE.Delete(idx);
+  if( WORLD.GetDupReqs() && BTCONTENT.pBMultPeer->IsSet(idx) ){
+    if( WORLD.CancelPiece(idx) && arg_verbose )
+      CONSOLE.Debug("Duplicate request cancelled in piece completion");
+  }
+  if( PENDINGQUEUE.Delete(idx) && arg_verbose )
+    CONSOLE.Debug("Duplicate found in Pending, shouldn't be there");
+  BTCONTENT.pBMultPeer->UnSet(idx);
   return r;
 }
 
 int btPeer::PieceDeliver(size_t mlen)
 {
-  size_t idx,off,len;
+  size_t idx, off, len;
   char *msgbuf = stream.in_buffer.BasePointer();
   time_t t = (time_t)0;
-  int f_requested = 0, f_success = 1, f_count = 1, f_want = 1;
+  int f_accept = 0, f_requested = 0, f_success = 1, f_count = 1, f_want = 1;
+  int f_complete = 0, dup = 0;
 
   idx = get_nl(msgbuf + H_LEN + H_BASE_LEN);
   off = get_nl(msgbuf + H_LEN + H_BASE_LEN + H_INT_LEN);
@@ -743,9 +821,16 @@ int btPeer::PieceDeliver(size_t mlen)
     }
   }
 
+  // If the slice is outstanding and was cancelled from this peer, accept.
+  if( !f_requested && BTCONTENT.pBMultPeer->IsSet(idx) &&
+      m_last_timestamp - m_cancel_time <= (m_latency ? (m_latency*2) : 60) &&
+      (WORLD.HasSlice(idx, off, len) || PENDINGQUEUE.HasSlice(idx, off, len)) ){
+    f_accept = dup = 1;
+  }
+
   Self.StartDLTimer();
 
-  if( f_requested ){
+  if( f_requested || f_accept ){
     if(arg_verbose) CONSOLE.Debug("Receiving piece %d/%d/%d from %p",
       (int)idx, (int)off, (int)len, this);
     if( !BTCONTENT.pBF->IsSet(idx) &&
@@ -754,7 +839,7 @@ int btPeer::PieceDeliver(size_t mlen)
       f_success = 0;
       // Re-queue the request, unless WriteSlice triggered flush failure
       // (then the request is already in Pending).
-      if( !BTCONTENT.FlushFailed() ){
+      if( f_requested && !BTCONTENT.FlushFailed() ){
         // This removes only the first instance; re-queued request is safe.
         request_q.Remove(idx,off,len);
         m_req_out--;
@@ -766,69 +851,84 @@ int btPeer::PieceDeliver(size_t mlen)
       }
     }else{  // saved or had the data
       request_q.Remove(idx,off,len);
-      m_req_out--;
+      if( f_requested ) m_req_out--;
       // Check for & cancel requests for this slice from other peers in initial
       // and endgame modes.
-      int dup = 0;
-      if( BTCONTENT.pBF->Count() < 2 || WORLD.Endgame() ) dup = 1;
-      if( dup ) WORLD.CancelSlice(idx, off, len);
-      if( dup || BTCONTENT.FlushFailed() )
-        PENDINGQUEUE.DeleteSlice(idx, off, len);
+      if( dup || (WORLD.GetDupReqs() && BTCONTENT.pBMultPeer->IsSet(idx)) )
+        dup = WORLD.CancelSlice(idx, off, len);
+      if( WORLD.GetDupReqs() || BTCONTENT.FlushFailed() )
+        dup += PENDINGQUEUE.DeleteSlice(idx, off, len);
     }
   }else{  // not requested--not saved
     if( m_last_timestamp - m_cancel_time > (m_latency ? (int)(m_latency*2) : 60) ){
-      m_err_count++;
-      if(arg_verbose) CONSOLE.Debug("err: %p (%d) Unrequested piece %d/%d/%d",
-        this, m_err_count, (int)idx, (int)off, (int)len, this);
+      char msg[40];
+      BTCONTENT.CountUnwantedBlock();
+      sprintf(msg, "Unrequested piece %d/%d/%d", (int)idx, (int)off, (int)len);
+      if( PeerError(1, msg) < 0 ) return -1;
       ResetDLTimer(); // set peer rate=0 so we don't favor for upload
-      f_count = 0;
-      f_want = 0;
-    }else if(arg_verbose) CONSOLE.Debug("Unneeded piece %d/%d/%d from %p",
-      (int)idx, (int)off, (int)len, this);
+      f_count = f_want = 0;
+    }else{
+      if(arg_verbose) CONSOLE.Debug("Unneeded piece %d/%d/%d from %p",
+        (int)idx, (int)off, (int)len, this);
+      BTCONTENT.CountDupBlock(len);
+    }
     f_success = 0;
   }
   if( !m_want_again && f_want ) m_want_again = 1;
 
   // Determine how many outstanding requests we should maintain, roughly:
   // (request turnaround latency) / (time to transmit one slice)
-  if(t){
-    m_latency = (m_last_timestamp <= t) ? 1 : (m_last_timestamp - t);
-    if(arg_verbose) CONSOLE.Debug("%p latency is %d sec (receive)",
-      this, (int)m_latency);
-    m_latency_timestamp = m_last_timestamp;
-  }
-  size_t rate;
-  if( (rate = RateDL()) > len/20 && m_latency_timestamp ){
-    // 20==RATE_INTERVAL from rate.cpp.  This is really just a check to see if
-    // rate is measurable/usable.
-    m_req_send = (size_t)( m_latency / (len / (double)rate) + 1 );
-    if( m_req_send < 2 ) m_req_send = 2;
-
-    // If latency increases, we will see this as a dlrate decrease.
-    if( rate < m_prev_dlrate ) m_req_send++;
-    else if( m_last_timestamp - m_latency_timestamp >= 30 &&
-        m_req_out == m_req_send - 1 ){
-      // Try to force latency measurement every 30 seconds.
-      m_req_send--;
+  if( f_requested ){
+    if(t){
+      m_latency = (m_last_timestamp <= t) ? 1 : (m_last_timestamp - t);
+      if(arg_verbose) CONSOLE.Debug("%p latency is %d sec (receive)",
+        this, (int)m_latency);
       m_latency_timestamp = m_last_timestamp;
     }
-    m_prev_dlrate = rate;
-  }else if (m_req_send < 5) m_req_send = 5;
+    size_t rate;
+    if( (rate = RateDL()) > len/20 && m_latency_timestamp ){
+      // 20==RATE_INTERVAL from rate.cpp.  This is really just a check to see
+      // if rate is measurable/usable.
+      m_req_send = (size_t)( m_latency / (len / (double)rate) + 1 );
+      if( m_req_send < 2 ) m_req_send = 2;
+  
+      // If latency increases, we will see this as a dlrate decrease.
+      if( rate < m_prev_dlrate ) m_req_send++;
+      else if( m_last_timestamp - m_latency_timestamp >= 30 &&
+          m_req_out == m_req_send - 1 ){
+        // Try to force latency measurement every 30 seconds.
+        m_req_send--;
+        m_latency_timestamp = m_last_timestamp;
+      }
+      m_prev_dlrate = rate;
+    }else if (m_req_send < 5) m_req_send = 5;
+  }
 
   /* if piece download complete. */
-  if( f_success && (request_q.IsEmpty() || !request_q.HasIdx(idx)) &&
-      !BTCONTENT.pBF->IsSet(idx) ){
+  if( f_success && !BTCONTENT.pBF->IsSet(idx) &&
+      ( (f_requested && (request_q.IsEmpty() || !request_q.HasIdx(idx))) ||
+        (f_accept && !WORLD.WhoHas(idx) && !PENDINGQUEUE.Exist(idx)) ) ){
     // Above WriteSlice may have triggered flush failure.  If data was saved,
     // slice was deleted from Pending.  If piece is incomplete, it's in Pending.
     if( !(BTCONTENT.FlushFailed() && PENDINGQUEUE.Exist(idx)) &&
-        !ReportComplete(idx) )
+        !(f_complete = ReportComplete(idx, len)) )
       f_count = 0;
   }
 
   // Don't count the slice in our DL total if it was unsolicited or bad.
   // (We don't owe the swarm any UL for such data.)
   if( f_count ) DataRecved(len);
-  return (P_FAILED == m_status) ? -1 : RequestCheck();
+
+  if( !f_complete && dup ) WORLD.CancelOneRequest(idx);
+
+  if( request_q.IsEmpty() ){ 
+    StopDLTimer();
+    if( f_requested) m_standby = 0;
+  }
+
+  return (P_FAILED == m_status) ? -1 :
+                                  (m_standby || !f_requested) ? 0 :
+                                  RequestCheck();
 }
 
 // This is for re-requesting unsuccessful slices.
@@ -883,8 +983,7 @@ void btPeer::CloseConnection()
     StopDLTimer();
     StopULTimer();
     stream.Close();
-    if( !request_q.IsEmpty() )
-      PENDINGQUEUE.Pending(&request_q);
+    PutPending();
   }
   if( g_next_up == this ) g_next_up = (btPeer *)0;
   if( g_next_dn == this ) g_next_dn = (btPeer *)0;
@@ -940,6 +1039,7 @@ int btPeer::HandShake()
   if( memcmp(stream.in_buffer.BasePointer(), BTCONTENT.GetShakeBuffer(), 68)
         == 0 ){
     if(arg_verbose) CONSOLE.Debug("peer %p is myself", this);
+    if( m_connect && !cfg_public_ip ) Self.SetIp(m_sin);
     WORLD.AdjustPeersCount();
     return -1;
   }
@@ -1022,17 +1122,12 @@ int btPeer::NeedWrite(int limited)
   else if( !m_state.local_choked && !reponse_q.IsEmpty() && !limited )
     yn = 1;                                                //can upload a slice
   else if( !m_state.remote_choked && m_state.local_interested &&
-           request_q.IsEmpty() ){
-    if( m_standby && WORLD.Endgame() ){
-      if(arg_verbose) CONSOLE.Debug("%p un-standby (endgame)", this);
-      m_standby = 0;
-    }
-    if( !m_standby ) yn = 1;                         // can request a new piece
-  }
-  if( !yn && request_q.NextSend() && m_req_out < m_req_send &&
-     (m_req_out < 2 || !(r = RateDL()) ||
-      1 >= (m_req_out+1) * request_q.GetRequestLen() / (double)r -
-      m_latency) )
+           request_q.IsEmpty() && !m_standby )
+    yn = 1;                                          // can request a new piece
+  else if( request_q.NextSend() && m_req_out < m_req_send &&
+           (m_req_out < 2 || !(r = RateDL()) ||
+            1 >= (m_req_out+1) * request_q.GetRequestLen() / (double)r -
+            m_latency) )
     yn = 1;                                        // can send a queued request
 
   return yn;
@@ -1072,11 +1167,6 @@ int btPeer::RecvModule()
 {
   ssize_t r = 0;
   
-  if ( 32 <= m_err_count ){
-    m_want_again = 0;
-    return -1;
-  }
-
   if( stream.PeekMessage(M_PIECE) ){
     if( !g_next_dn || g_next_dn==this ){
       int limited = WORLD.BandWidthLimitDown(Self.LateDL());
@@ -1175,19 +1265,22 @@ int btPeer::HealthCheck()
     }
   }else if( m_health_time <= now - 60 ){
     m_health_time = now;
-    if( !m_state.remote_choked && m_req_out &&
-        m_receive_time < now - (!m_latency ? 300 :
-                               ((m_latency < 30) ? 60 : (int)(2*m_latency))) ){
-      // if a repeat occurrence, get rid of the peer
-      if( m_bad_health ) return -1;
-      m_bad_health = 1;
-      if(arg_verbose)
-        CONSOLE.Debug("%p unresponsive; resetting request queue", this);
-      int retval = CancelRequest(request_q.GetHead());
-      PENDINGQUEUE.Pending(&request_q);
-      m_req_out = 0;
-      return (retval < 0) ? -1 : RequestCheck();
-    } else m_bad_health = 0;
+    if( !m_state.remote_choked && m_req_out ){
+      size_t allowance = !m_latency ? 150 : ((m_latency < 60) ? 60 : m_latency);
+      if( m_receive_time < now - 2*allowance ){
+        // if a repeat occurrence, get rid of the peer
+        if( m_bad_health || PeerError(2, "unresponsive") < 0 ) return -1;
+        m_bad_health = 1;
+        if(arg_verbose)
+          CONSOLE.Debug("%p unresponsive; resetting request queue", this);
+        int retval = CancelRequest();
+        PutPending();
+        return (retval < 0) ? -1 : 0;
+      }else if( m_receive_time < now - allowance ){
+        CONSOLE.Debug("%p unresponsive; sending keepalive", this);
+        AreYouOK();  // keepalive--may stimulate the connection
+      }else m_bad_health = 0;
+    }else m_bad_health = 0;
   }
   return 0;
 }
@@ -1201,16 +1294,14 @@ int btPeer::IsEmpty() const
     1:0;
 }
 
-int btPeer::PutPending()
+void btPeer::PutPending()
 {
-  int retval = 0;
-
   if( !request_q.IsEmpty() ){
-    retval = CancelRequest(request_q.GetHead());
-    PENDINGQUEUE.Pending(&request_q);
+    if( PENDINGQUEUE.Pending(&request_q) != 0 )
+      WORLD.RecalcDupReqs();
+    WORLD.UnStandby();
   }
   m_req_out = 0;
-  return retval;
 }
 
 int btPeer::NeedPrefetch() const
@@ -1234,6 +1325,7 @@ void btPeer::Prefetch(time_t deadline)
       m_prefetch_completion < 2 && request_q.LastSlice() && (rd=RateDL()) > 0 &&
       request_q.Peek(&idx, &off, &len)==0 &&
       m_last_timestamp + len / rd < now + WORLD.GetUnchokeInterval() &&
+      Self.RateDL() > 0 &&
       m_last_timestamp + len / rd <
         now + (cfg_cache_size*1024*1024 - BTCONTENT.GetPieceLength(idx)) /
               Self.RateDL() ){
@@ -1284,6 +1376,21 @@ void btPeer::Prefetch(time_t deadline)
       }
     }
   }
+}
+
+int btPeer::PeerError(int weight, const char *message)
+{
+  int old_count = m_err_count;
+
+  m_err_count += weight;
+  if( m_err_count < 0 ) m_err_count = 0;
+  if( arg_verbose && (weight > 0 || old_count > 0) )
+    CONSOLE.Debug("%p error %+d (%d) %s", this, weight, m_err_count, message);
+
+  if( m_err_count >= 16 ){
+    m_want_again = 0;
+    return -1;
+  }else return 0;
 }
 
 void btPeer::dump()

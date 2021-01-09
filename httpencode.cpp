@@ -25,15 +25,10 @@ char* Http_url_encode(char *s,const char *b,size_t n)
 {
   size_t r,i;
   for(r = 0,i = 0 ; i < n; i++){
-	  //if( isalpha(b[i]) || isdigit(b[i]) ){
-    if (
-		(b[i]>=48 && b[i]<=57) //numbers
-		||
-		(b[i]>=65 && b[i]<=90) //Capitals
-		||
-		(b[i]>=97 && b[i]<=112) //lower case
-	   )
-	{  
+    if( !(b[i] & ~0x7f) &&                   // quick ASCII test
+        ((b[i] >= 0x41 && b[i] <= 0x5a) ||   // A-Z [ASCII]
+         (b[i] >= 0x61 && b[i] <= 0x7a) ||   // a-z
+         (b[i] >= 0x30 && b[i] <= 0x39)) ){  // 0-9
       s[r] = b[i];
       r++;
     }else{
@@ -86,10 +81,10 @@ size_t Http_split(char *b,size_t n,char **pd,size_t *dlen)
 
   hlen = 0;
 
-  if( n < 16 ) return 0;	// ï¿½ï¿½ï¿½ï¿½Ì«Ð¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½HTMLï¿½ï¿½ï¿½ï¿½
+  if( n < 16 ) return 0;	// ³¤¶ÈÌ«Ð¡£¬²»¿ÉÄÜÊÇÒ»¸öHTML±¨ÎÄ
 
   if(strncasecmp(b,"HTTP/",5) != 0){
-    return 0;			// Ã»ï¿½ï¿½HTMLï¿½×²ï¿½????
+    return 0;			// Ã»ÓÐHTMLÊ×²¿????
     /* message without http header */
     //*pd = b;
     //*dlen = n;
@@ -101,7 +96,7 @@ size_t Http_split(char *b,size_t n,char **pd,size_t *dlen)
       hlen = p - b;
       *pd = ( p + addtion );
       *dlen = n - hlen - addtion;
-    }else{		// Ö»ï¿½ï¿½ï¿½×²ï¿½ï¿½ï¿½Ï¢????
+    }else{		// Ö»ÓÐÊ×²¿ÐÅÏ¢????
       hlen = n;
       *pd = (char*) 0;
       *dlen = 0;

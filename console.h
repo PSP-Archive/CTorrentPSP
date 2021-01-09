@@ -5,18 +5,8 @@
 
 #if defined(USE_TERMIOS)
 #include <termios.h>
-#if defined(GWINSZ_IN_SYS_IOCTL)
-#include <sys/ioctl.h>
-#endif
-
 #elif defined(USE_TERMIO)
 #include <termio.h>
-#if defined(HAVE_IOCTL_H)
-#include <ioctl.h>
-#elif defined(HAVE_SYS_IOCTL_H)
-#include <sys/ioctl.h>
-#endif
-
 #elif defined(USE_SGTTY)
 #include <sgtty.h> 
 #endif
@@ -44,7 +34,8 @@ class ConStream
   unsigned char m_suspend:1;
   unsigned char m_inputmode:1;
   unsigned char m_filemode:1;
-  unsigned char m_reserved:4;
+  unsigned char m_restore:1;
+  unsigned char m_reserved:3;
 
 #if defined(USE_TERMIOS)
   struct termios m_original;
@@ -56,6 +47,7 @@ class ConStream
 
   void _newline();
   int _convprintf(const char *format, va_list ap);
+  void Error(int sev, const char *message, ...);
 
  public:
   ConStream();
@@ -100,6 +92,7 @@ class Console
 
   int m_status_format;
   int m_oldfd;
+  int m_status_len;
 
   typedef void (Console::*statuslinefn)(char buffer[], size_t length);
   statuslinefn m_statusline[STATUSLINES];
@@ -109,6 +102,7 @@ class Console
   ConStream m_stdout, m_stderr, m_stdin, m_off;
   ConStream *m_streams[O_NCHANNELS+1];
 
+  int OpenNull(int nullfd, ConStream *stream, int sfd);
   void SyncNewlines(int master);
   int OperatorMenu(const char *param);
   void ShowFiles();
@@ -136,7 +130,9 @@ class Console
   char *Input(const char *prompt, char *field, size_t length);
 
   char *GetChannel(int channel) const { return m_streams[channel]->GetName(); }
-  int ChangeChannel(int channel, const char *param);
+  int ChangeChannel(int channel, const char *param, int notify = 1);
+
+  void cpu();
 
   RETSIGTYPE Signal(int sig_no);
   void Daemonize();

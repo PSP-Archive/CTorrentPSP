@@ -2,6 +2,7 @@
 
 #include <sys/time.h>
 
+#include "btconfig.h"
 #include "bufio.h" // for BUF_DEF_SIZ
 #include "bttime.h"
 #include "console.h"
@@ -15,14 +16,16 @@
 
 Rate::Rate()
 {
-  m_last_timestamp = m_total_timeused = (time_t)0;
+  m_last_timestamp = m_total_timeused = m_nom_time = (time_t)0;
   m_count_bytes = 0;
   m_history = m_history_last = (BWSAMPLE *)0;
   m_last_realtime = m_recent_realtime = m_prev_realtime = 0;
   m_last_size = m_recent_size = m_prev_size = 0;
   m_selfrate = (Rate *)0;
   m_late = 0;
-  m_ontime = 0;
+  m_ontime = m_update_nominal = 0;
+  m_lastrate.lasttime = (time_t)0;
+  m_nominal = DEFAULT_SLICE_SIZE / 8;  // minimum "acceptable" rate
 }
 
 void Rate::Reset()
@@ -42,9 +45,16 @@ void Rate::StopTimer()
 {
   if( m_last_timestamp ){
     m_total_timeused += (now - m_last_timestamp);
+    if( m_history ){
+      if( m_history == m_history_last )
+        m_nominal = (size_t)(m_history->bytes /
+                             (m_history->timestamp - m_last_timestamp));
+      else (void)RateMeasure();  // updates nominal
+    }
     m_last_timestamp = 0;
     ClearHistory();
   }
+  m_update_nominal = 0;
 }
 
 BWSAMPLE *Rate::NewSample()
@@ -123,6 +133,12 @@ void Rate::CountAdd(size_t nbytes)
   if( m_selfrate ) m_selfrate->CountAdd(nbytes);
 }
 
+void Rate::UnCount(size_t nbytes)
+{
+  m_count_bytes -= nbytes;
+  if( m_selfrate ) m_selfrate->UnCount(nbytes);
+}
+
 void Rate::RateAdd(size_t nbytes, size_t bwlimit)
 {
   struct timespec nowspec;
@@ -135,6 +151,8 @@ void Rate::RateAdd(size_t nbytes, size_t bwlimit)
 
 void Rate::RateAdd(size_t nbytes, size_t bwlimit, double timestamp)
 {
+  int update_nominal = 0;
+
   if( m_history_last && timestamp < m_history_last->timestamp ){
     // time went backward
     ClearHistory();
@@ -152,7 +170,10 @@ void Rate::RateAdd(size_t nbytes, size_t bwlimit, double timestamp)
     if( BWSAMPLE *p = NewSample() ){
       p->timestamp = timestamp;
       p->bytes = nbytes;
-      if( m_history_last ) m_history_last->next = p;
+      if( m_history_last ){
+        m_history_last->next = p;
+        update_nominal = 1;
+      }
       else m_history = p;
       m_history_last = p;
     }
@@ -187,7 +208,13 @@ void Rate::RateAdd(size_t nbytes, size_t bwlimit, double timestamp)
     m_recent_size = nbytes;
   }else m_recent_size += nbytes;
 
-  if( m_selfrate ) m_selfrate->RateAdd(nbytes, bwlimit, timestamp);
+  if( m_selfrate ){
+    if( update_nominal ){
+      m_update_nominal = 1;
+      (void)RateMeasure();  // updates nominal
+    }
+    m_selfrate->RateAdd(nbytes, bwlimit, timestamp);
+  }
 
 //if(!m_selfrate) CONSOLE.Debug("%p RateAdd %u @ %f next=%f", this,
 //  nbytes, timestamp, m_last_realtime + (double)m_last_size / bwlimit);
@@ -215,6 +242,18 @@ size_t Rate::CurrentRate()
   return (size_t)( m_last_size / timeused );
 }
 
+size_t Rate::NominalRate()
+{
+  if( !m_history && m_last_timestamp && TimeUsed() > 10 ){
+    // sent a request over 10 sec ago but have received nothing
+    if( !m_nom_time || now >= m_nom_time + 10 ){
+      m_nominal /= 10;
+      m_nom_time = now;
+    }
+  }
+  return m_nominal;
+}
+
 size_t Rate::RateMeasure()
 {
   // calculate rate based on bandwidth history data
@@ -222,7 +261,17 @@ size_t Rate::RateMeasure()
   double timeused = 0;
   BWSAMPLE *p;
 
-  if( !m_last_timestamp || !m_history ) return 0; // no current rate
+  if( m_history && now == m_lastrate.lasttime &&
+      m_recent_realtime == m_lastrate.recent ){
+    if( m_update_nominal ) m_nominal = m_lastrate.value;
+    return m_lastrate.value;
+  }
+
+  m_lastrate.lasttime = now;
+  if( !m_last_timestamp || !m_history ){
+    m_lastrate.value = 0;
+    return 0; // no current rate
+  }
 
   Cleanup();
   for( p=m_history; p; p=p->next ){
@@ -231,6 +280,7 @@ size_t Rate::RateMeasure()
   timeused = (double)(now - (time_t)(m_history->timestamp));
   if( timeused == 0 ) timeused = 1;
   else if( timeused < 0 ) ClearHistory();  // time went backward
+  else m_update_nominal = 1;
   if( now < (time_t)m_recent_realtime ){
     if( m_history ){
       m_recent_realtime = (double)now;
@@ -241,7 +291,10 @@ size_t Rate::RateMeasure()
       m_recent_size = m_prev_size = 0;
     }
   }
-  if( !m_history ) return 0;
+  if( !m_history ){
+    m_lastrate.value = 0;
+    return 0;
+  }
 
   // Don't let the most recent addition inflate the rate measurement.
   if( now == (time_t)m_recent_realtime ){
@@ -259,7 +312,10 @@ size_t Rate::RateMeasure()
       (now - (time_t)m_recent_realtime) );
   }
 
-  return (size_t)(countbytes / timeused);
+  m_lastrate.value = (size_t)(countbytes / timeused);
+  m_lastrate.recent = m_recent_realtime;
+  if( m_update_nominal ) m_nominal = m_lastrate.value;
+  return m_lastrate.value;
 }
 
 size_t Rate::RateMeasure(const Rate &ra_to)

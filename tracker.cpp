@@ -19,7 +19,7 @@
 #include "console.h"
 #include "bttime.h"
 
-#ifndef HAVE_SNPRINTF
+#if !defined(HAVE_SNPRINTF) || !defined(HAVE_RANDOM)
 #include "compat.h"
 #endif
 
@@ -42,6 +42,9 @@ btTracker::btTracker()
   m_connect_refuse_click = 0;
   m_last_timestamp = (time_t) 0;
   m_prevpeers = 0;
+
+  m_report_time = (time_t) 0;
+  m_report_dl = m_report_ul = m_totaldl = m_totalul = 0;
 }
 
 btTracker::~btTracker()
@@ -330,34 +333,52 @@ int btTracker::Initial()
     m_key[i] = chars[rand()%36];
   m_key[8] = 0;
 
-  if( BuildBaseRequest() < 0 ) return -1;
-
   /* get local ip address */
+  struct sockaddr_in addr;
+  if( cfg_public_ip ){  // Get specified public address.
+    if( (addr.sin_addr.s_addr = inet_addr(cfg_public_ip)) == INADDR_NONE ){
+      struct hostent *h;
+      h = gethostbyname(cfg_public_ip);
+      memcpy(&addr.sin_addr, h->h_addr, sizeof(struct in_addr));
+    }
+    Self.SetIp(addr);
+    goto next_step;
+  }
+  if( cfg_listen_ip ){  // Get specified listen address.
+    addr.sin_addr.s_addr = cfg_listen_ip;
+    Self.SetIp(addr);
+    if( !IsPrivateAddress(cfg_listen_ip) ) goto next_step;
+  }
   { // Try to get address corresponding to the hostname.
-    struct sockaddr_in addr;
     struct hostent *h;
     char hostname[MAXHOSTNAMELEN];
 
-//    if(gethostname(hostname, MAXHOSTNAMELEN) == -1) return -1;
     if( gethostname(hostname, MAXHOSTNAMELEN) >= 0 ){
 //    CONSOLE.Debug("hostname: %s", hostname);
       if( (h = gethostbyname(hostname)) ){
 //      CONSOLE.Debug("Host name: %s", h->h_name);
 //      CONSOLE.Debug("Address: %s", inet_ntoa(*((struct in_addr *)h->h_addr)));
-        memcpy(&addr.sin_addr,h->h_addr,sizeof(struct in_addr));
-        Self.SetIp(addr);
-        return 0;
+        if( !IsPrivateAddress(((struct in_addr *)(h->h_addr))->s_addr) ||
+            !cfg_listen_ip ){
+          memcpy(&addr.sin_addr, h->h_addr, sizeof(struct in_addr));
+          Self.SetIp(addr);
+        }
       }
     }
   }
-  { // If behind NAT, this only gets the local side address.
-    struct sockaddr_in addr;
-    socklen_t addrlen = sizeof(struct sockaddr_in);
-    if( getsockname(m_sock,(struct sockaddr*)&addr,&addrlen) == 0 )
-      Self.SetIp(addr);
-  }
+
+ next_step:
+  if( BuildBaseRequest() < 0 ) return -1;
 
   return 0;
+}
+
+int btTracker::IsPrivateAddress(uint32_t addr)
+{
+  return (addr & htonl(0xff000000)) == htonl(0x0a000000) ||  // 10.x.x.x/8
+         (addr & htonl(0xfff00000)) == htonl(0xac100000) ||  // 172.16.x.x/12
+         (addr & htonl(0xffff0000)) == htonl(0xc0a80000) ||  // 192.168.x.x/16
+         (addr & htonl(0xff000000)) == htonl(0x7f000000);    // 127.x.x.x/8
 }
 
 int btTracker::BuildBaseRequest()
@@ -370,10 +391,26 @@ int btTracker::BuildBaseRequest()
     format=REQ_URL_P1A_FMT;
   else format=REQ_URL_P1_FMT;
 
+  char *opt = (char *)0;
+  if( cfg_public_ip ){
+    opt = new char[5+strlen(cfg_public_ip)];
+    strcpy(opt, "&ip=");
+    strcat(opt, cfg_public_ip);
+  }else{
+    struct sockaddr_in addr;
+    Self.GetAddress(&addr);
+    if( !IsPrivateAddress(addr.sin_addr.s_addr) ){
+      opt = new char[20];
+      strcpy(opt, "&ip=");
+      strcat(opt, inet_ntoa(addr.sin_addr));
+    }
+  }
+
   if(MAXPATHLEN < snprintf((char*)m_path,MAXPATHLEN,format,
                      tmppath,
                      Http_url_encode(ih_buf,(char*)BTCONTENT.GetInfoHash(),20),
                      Http_url_encode(pi_buf,(char*)BTCONTENT.GetPeerId(),20),
+                     opt ? opt : "",
                      cfg_listen_port,
                      m_key)){
     return -1;
@@ -450,12 +487,13 @@ int btTracker::SendRequest()
   char opt1[20] = "&event=";
   char opt2[12+PEER_ID_LEN] = "&trackerid=";
 
+  if( BTCONTENT.IsFull() ) m_totaldl = Self.TotalDL();
   if(MAXPATHLEN < snprintf(REQ_BUFFER,MAXPATHLEN,REQ_URL_P2_FMT,
                      m_path,
                      event ? strncat(opt1,event,12) : "",
                      *m_trackerid ? strncat(opt2,m_trackerid,PEER_ID_LEN) : "",
-                     (unsigned long long)(Self.TotalUL()),
-                     (unsigned long long)(Self.TotalDL()),
+                     (unsigned long long)(m_totalul = Self.TotalUL()),
+                     (unsigned long long)m_totaldl,
                      (unsigned long long)(BTCONTENT.GetLeftBytes()),
                      (int)200)){
     return -1;
@@ -483,6 +521,13 @@ int btTracker::SendRequest()
     if( event == str_event[2] )
       m_f_completed = 0;  // failed sending completion event
     return -1;
+  }else{
+    m_report_time = now;
+    m_report_dl = m_totaldl;
+    m_report_ul = m_totalul;
+    if(arg_verbose)
+      CONSOLE.Debug("Reported to tracker:  %llu uploaded, %llu downloaded",
+        (unsigned long long)m_report_ul, (unsigned long long)m_report_dl);
   }
 
   return 0;
@@ -507,14 +552,12 @@ int btTracker::IntervalCheck(fd_set *rfdp, fd_set *wfdp)
       FD_SET(m_sock, rfdp);
       if( m_status == T_CONNECTING ) FD_SET(m_sock, wfdp);
     }else if( now < m_last_timestamp ) m_last_timestamp = now; // time reversed
-  }else{
-    if( m_status == T_CONNECTING ){
-      FD_SET(m_sock, rfdp);
-      FD_SET(m_sock, wfdp);
-    }else if( INVALID_SOCKET != m_sock ){
-      FD_SET(m_sock, rfdp);
-      if( m_request_buffer.Count() ) FD_SET(m_sock, wfdp);
-    }
+  }else if( T_CONNECTING == m_status ){
+    FD_SET(m_sock, rfdp);
+    FD_SET(m_sock, wfdp);
+  }else if( INVALID_SOCKET != m_sock ){
+    FD_SET(m_sock, rfdp);
+    if( m_request_buffer.Count() ) FD_SET(m_sock, wfdp);
   }
   return m_sock;
 }
@@ -607,6 +650,14 @@ void btTracker::SetStoped()
     Reset(15);
     m_f_stoped = 1;
   }
+}
+
+void btTracker::RestartTracker()
+{
+  SetStoped(); // finish the tracker
+  // Now we need to wait until the tracker updates (T_FINISHED == m_status),
+  // then Tracker.Restart().
+  SetRestart();
 }
 
 size_t btTracker::GetPeersCount() const 

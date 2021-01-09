@@ -1,3 +1,4 @@
+#include "config.h"
 #include "bitfield.h"
 
 #ifdef WINDOWS
@@ -12,6 +13,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+
+#ifndef HAVE_RANDOM
+#include "compat.h"
+#endif
 
 const unsigned char BIT_HEX[] = {0x80,0x40,0x20,0x10,0x08,0x04,0x02,0x01};
 
@@ -29,7 +34,6 @@ size_t BitField::nbits = 0;
 BitField::BitField()
 {
   b = new unsigned char[nbytes];
-
 #ifndef WINDOWS  
   if( !b ) THROWERR;
 #endif
@@ -45,7 +49,6 @@ BitField::BitField(size_t npcs)
   if( nbits % 8 ) nbytes++;
 
   b = new unsigned char[nbytes];
-
 #ifndef WINDOWS
   if( !b ) THROWERR;
 #endif
@@ -61,22 +64,70 @@ BitField::BitField(const BitField &bf)
   else{
     b = new unsigned char[nbytes];
 #ifndef WINDOWS
-	if( !b ) THROWERR;
+    if( !b ) THROWERR;
 #endif
     memcpy(b, bf.b, nbytes);
   }
 }
 
-void BitField::SetReferBuffer(char *buf)
+void BitField::operator=(const BitField &bf)
 {
-  if( !b ){ 
-    b = new unsigned char[nbytes];
+  nset = bf.nset;
+  if( _isfull_sp(bf) ){
+    if( b ) { delete []b; b = (unsigned char*) 0; }
+  }else{
+    if( !b ){ 
+      b = new unsigned char[nbytes];
 #ifndef WINDOWS
-	if( !b ) THROWERR;
+      if( !b ) THROWERR;
 #endif
+    }
+    memcpy(b, bf.b, nbytes);
   }
-  memcpy((char*)b,buf,nbytes);
-  _recalc();
+}
+
+// _set() sets the bit but doesn't increment nset or set the isfull case.
+// Use instead of Set() when you know nset is incorrect and will be corrected
+// afterward (as in Invert or by _recalc),
+// and either bitfield won't get full or you'll _recalc() afterward to fix it.
+inline void BitField::_set(size_t idx)
+{
+  if( idx < nbits && !_isfull() && !_isset(idx) )
+    b[idx / 8] |= BIT_HEX[idx % 8];
+}
+
+inline void BitField::_setall(unsigned char *buf)
+{
+  size_t i;
+
+  memset(buf,0xFF,nbytes - 1);
+
+  if( nbits % 8 ){
+    buf[nbytes - 1] = ~(BIT_HEX[nbits % 8 - 1] - 1);
+  }else
+    buf[nbytes - 1] = (unsigned char) 0xFF;
+}
+
+inline void BitField::_recalc()
+{
+  // ÖØÐÂ¼ÆËã nset µÄÖµ
+  static unsigned char BITS[256] = {0xff};
+  size_t i;
+
+  if( BITS[0] ){  // initialize bitcounts
+    size_t j, exp, x;
+    BITS[0] = 0;
+    x = 0;
+    for(i=0; i<8; i++){
+      exp = 1<<i;
+      for(j=0; j < exp; j++)
+        BITS[++x] = BITS[j] + 1;
+    }
+  }
+
+  for(nset = 0, i = 0; i < nbytes; i++)
+    nset += BITS[b[i]];
+  if( _isfull() && b ){ delete []b; b = (unsigned char*) 0;}
 }
 
 void BitField::SetAll()
@@ -93,7 +144,7 @@ void BitField::Clear()
   if( _isfull() ){
     b = new unsigned char[nbytes];
 #ifndef WINDOWS
-	if( !b ) THROWERR;
+    if( !b ) THROWERR;
 #endif
   }
   memset(b, 0, nbytes);
@@ -124,7 +175,7 @@ void BitField::UnSet(size_t idx)
   if( _isfull() ){
     b = new unsigned char[nbytes];
 #ifndef WINDOWS
-	if( !b ) THROWERR;
+    if( !b ) THROWERR;
 #endif
     _setall(b);
     b[idx / 8] &= (~BIT_HEX[idx % 8]);
@@ -140,18 +191,9 @@ void BitField::UnSet(size_t idx)
 void BitField::Invert()
 {
   if( _isempty() ){
-    if(b){
-      delete []b;
-      b = (unsigned char*) 0;
-    }
-    nset = nbits;
+    SetAll();
   }else if( _isfull() ){
-    b = new unsigned char[nbytes];
-#ifndef WINDOWS
-	if( !b ) THROWERR;
-#endif
-    memset(b, 0, nbytes);
-    nset = 0;
+    Clear();
   }else{
     size_t i = 0;
     size_t s = nset;
@@ -168,74 +210,70 @@ void BitField::Invert()
   }
 }
 
-// _set() sets the bit but doesn't increment nset or set the isfull case.
-// Use instead of Set() when you know nset is incorrect and will be corrected
-// afterward (as in Invert or by _recalc),
-// and either bitfield won't get full or you'll _recalc() afterward to fix it.
-inline void BitField::_set(size_t idx)
-{
-  if( idx < nbits && !_isfull() && !_isset(idx) )
-    b[idx / 8] |= BIT_HEX[idx % 8];
-}
-
+// Combine (Logical "OR")
 void BitField::Comb(const BitField &bf)
 {
   size_t i;
-  if( _isfull() || _isfull_sp(bf) ){
-    SetAll();
-  }else{
-    for(i = 0; i < nbytes; i++) b[i] |= bf.b[i];
-    _recalc();
+  if( !_isempty_sp(bf) && !_isfull() ){
+    if( _isfull_sp(bf) ){
+      SetAll();
+    }else if( _isempty() ){
+      memcpy(b, bf.b, nbytes);
+      nset = bf.nset;
+    }else{
+      for(i = 0; i < nbytes; i++) b[i] |= bf.b[i];
+      _recalc();
+    }
   }
 }
 
 void BitField::Except(const BitField &bf)
 {
-   size_t i;
-  char c;
-  if( _isfull_sp(bf) ){
-    SetAll();
-    Invert();
-  }else if( bf.nset != 0 ){
-    if( nset >= nbits ){
-      b = new unsigned char[nbytes];
+  size_t i;
+
+  if( !_isempty_sp(bf) && !_isempty() ){
+    if( _isfull_sp(bf) ){
+      Clear();
+    }else{
+      if( _isfull() ){
+        b = new unsigned char[nbytes];
 #ifndef WINDOWS
-	  if( !b ) THROWERR;
+        if( !b ) THROWERR;
 #endif
-      _setall(b);
+        _setall(b);
+      }
+      for(i = 0; i < nbytes; i++) b[i] &= ~bf.b[i];
+      _recalc();
     }
-    for(i = 0; i < nbytes; i++){
-      c = b[i];
-      b[i] ^= bf.b[i];
-      b[i] &= c;
-    }
-    _recalc();
   }
 }
 
 void BitField::And(const BitField &bf)
 {
-   size_t i;
+  size_t i;
 
-  if( bf.nset == 0 ){
-    SetAll();
-    Invert();
-  }else if( !_isfull_sp(bf) ){
-    if( nset >= nbits ){
-      b = new unsigned char[nbytes];
+  if( !_isfull_sp(bf) && !_isempty() ){
+    if( _isempty_sp(bf) ){
+      Clear();
+    }else{
+      if( _isfull() ){
+        b = new unsigned char[nbytes];
 #ifndef WINDOWS
-	  if( !b ) THROWERR;
+        if( !b ) THROWERR;
 #endif
-      _setall(b);
+        memcpy(b, bf.b, nbytes);
+        nset = bf.nset;
+      }else{
+        for(i = 0; i < nbytes; i++) b[i] &= bf.b[i];
+        _recalc();
+      }
     }
-    for(i = 0; i < nbytes; i++) b[i] &= bf.b[i];
-    _recalc();
   }
 }
 
 size_t BitField::Random() const
 {
-   size_t idx;
+  size_t idx;
 
   if( _isfull() ) idx = rand() % nbits;
   else{
@@ -248,28 +286,18 @@ size_t BitField::Random() const
   return idx;
 }
 
-inline void BitField::_recalc()
+void BitField::SetReferBuffer(char *buf)
 {
-  // ï¿½ï¿½ï¿½Â¼ï¿½ï¿½ï¿½ nset ï¿½ï¿½Öµ
-   size_t i;
-  for(nset = 0, i = 0; i < nbits; i++) if( _isset(i) ) nset++;
-  if( _isfull() && b){ delete []b; b = (unsigned char*) 0;}
-}
-
-void BitField::operator=(const BitField &bf)
-{
-  nset = bf.nset;
-  if( _isfull_sp(bf) ){
-    if( b ) { delete []b; b = (unsigned char*) 0; }
-  }else{
-    if( !b ){ 
-      b = new unsigned char[nbytes];
+  if( !b ){ 
+    b = new unsigned char[nbytes];
 #ifndef WINDOWS
-	  if( !b ) THROWERR;
+    if( !b ) THROWERR;
 #endif
-    }
-    memcpy(b, bf.b, nbytes);
   }
+  memcpy((char*)b,buf,nbytes);
+  if( nbits % 8 )
+    b[nbytes - 1] &= ~(BIT_HEX[nbits % 8 - 1] - 1);
+  _recalc();
 }
 
 void BitField::WriteToBuffer(char *buf)
@@ -278,19 +306,6 @@ void BitField::WriteToBuffer(char *buf)
     _setall((unsigned char*)buf);
   else
     memcpy(buf,(char*)b,nbytes);
-}
-
-inline void BitField::_setall(unsigned char *buf)
-{
-  size_t i;
-
-  memset(buf,0xFF,nbytes - 1);
-
-  if( nbits % nbytes ){
-    for(i = 8 * (nbytes - 1); i < nbits; i++)
-      buf[i / 8] |= BIT_HEX[i % 8];
-  }else
-    buf[nbytes - 1] = (unsigned char) 0xFF;
 }
 
 int BitField::SetReferFile(const char *fname)

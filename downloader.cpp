@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "peerlist.h"
 #include "tracker.h"
@@ -35,13 +36,14 @@ void Downloader()
 
   FD_ZERO(&rfdnext); FD_ZERO(&wfdnext);
 
-  time(&now);
   do{
+    time(&now);
     if( !stopped ){
       if( !Tracker.IsQuitting() && BTCONTENT.SeedTimeout() )
         Tracker.SetStoped();
-      if( Tracker.IsQuitting() ){
+      if( Tracker.IsQuitting() && !Tracker.IsRestarting() ){
         stopped = 1;
+        WORLD.Pause();
         if( arg_ctcs ) CTCS.Send_Status();
       }
     }
@@ -67,6 +69,7 @@ void Downloader()
             maxsleep = 2;
           }else maxsleep = 0;
           f_idleused = 1;
+          time(&now);
         }
         r = Tracker.IntervalCheck(&rfd, &wfd);
         if( r > maxfd ) maxfd = r;
@@ -84,9 +87,13 @@ void Downloader()
     r = WORLD.IntervalCheck(&rfd, &wfd);
     if( r > maxfd ) maxfd = r;
 
-    while( !f_poll && BTCONTENT.NeedFlush() && WORLD.IsIdle() ){
-      BTCONTENT.FlushQueue();
-      maxsleep = 0;
+    if( !f_poll ){
+      time(&now);
+      while( BTCONTENT.NeedFlush() && WORLD.IsIdle() ){
+        BTCONTENT.FlushQueue();
+        maxsleep = 0;
+        time(&now);
+      }
     }
 
     rfdnext = rfd;
@@ -103,6 +110,11 @@ void Downloader()
 
     WORLD.UnLate();
     nfds = select(maxfd + 1,&rfd,&wfd,(fd_set*) 0,&timeout);
+    if( nfds < 0 ){
+      CONSOLE.Debug("Error from select:  %s", strerror(errno));
+      FD_ZERO(&rfdnext); FD_ZERO(&wfdnext);
+      nfds = 0;
+    }
 
     if( f_poll ) f_poll = 0;
     else if( nfds > 0 ) WORLD.DontWaitBW();

@@ -44,11 +44,11 @@ int TextPeerID(const unsigned char *peerid, char *txtid);
 class btBasic
 {
 protected:
+  struct sockaddr_in m_sin;
   Rate rate_dl;
   Rate rate_ul;
 
 private:
-  struct sockaddr_in m_sin;
 
 public:
   //IP地址相关函数
@@ -69,6 +69,7 @@ public:
   uint64_t TotalUL() const { return rate_ul.Count(); }
 
   void DataRecved(size_t nby) { rate_dl.CountAdd(nby); }
+  void DataUnRec(size_t nby) { rate_dl.UnCount(nby); }
   void DataSended(size_t nby, double timestamp) { rate_ul.CountAdd(nby);
     rate_ul.RateAdd(nby, (size_t)cfg_max_bandwidth_up, timestamp); }
 
@@ -76,6 +77,9 @@ public:
   size_t CurrentUL() { return rate_ul.CurrentRate(); }
   size_t RateDL() { return rate_dl.RateMeasure(); }
   size_t RateUL() { return rate_ul.RateMeasure(); }
+
+  size_t NominalDL() { return rate_dl.NominalRate(); }
+  size_t NominalUL() { return rate_ul.NominalRate(); }
 
   void StartDLTimer() { rate_dl.StartTimer(); }
   void StartULTimer() { rate_ul.StartTimer(); }
@@ -121,7 +125,7 @@ class btPeer:public btBasic
   BTSTATUS m_state;
 
   size_t m_cached_idx;
-  size_t m_err_count;
+  int m_err_count;
   size_t m_req_send;  // target number of outstanding requests
   size_t m_req_out;   // actual number of outstanding requests
   size_t m_latency;
@@ -132,21 +136,21 @@ class btPeer:public btBasic
   time_t m_choketime;
   time_t m_prefetch_time;
   time_t m_cancel_time;
+  size_t m_last_req_piece;
 
   static btPeer *g_next_up, *g_next_dn;
   static unsigned char g_defer_up;
   
   int PieceDeliver(size_t mlen);
-  int ReportComplete(size_t idx);
+  int ReportComplete(size_t idx, size_t len);
   int RequestCheck();
   int SendRequest();
-  int CancelPiece();
-  int CancelRequest(PSLICE ps);
   int ReponseSlice();
   int RequestPiece();
   int MsgDeliver();
   int CouldReponseSlice();
   int RequestSlice(size_t idx,size_t off,size_t len);
+  int PeerError(int weight, const char *message);
 
  public:
   unsigned char id[PEER_ID_LEN];
@@ -163,6 +167,7 @@ class btPeer:public btBasic
   int SendModule();
   int HealthCheck();
   int CheckSendStatus();
+  void UnStandby() { m_standby = 0; }
 
   time_t SetLastTimestamp() { return time(&m_last_timestamp); }
   time_t GetLastTimestamp() const { return m_last_timestamp; }
@@ -177,14 +182,15 @@ class btPeer:public btBasic
 
   int IsEmpty() const;
 
+  int CancelRequest();
   int CancelSliceRequest(size_t idx, size_t off, size_t len);
   int CancelPiece(size_t idx);
+  size_t FindLastCommonRequest(BitField &proposerbf);
   
   void SetStatus(unsigned char s){ m_status = s; }
   unsigned char GetStatus() const { return m_status; }
   int NeedWrite(int limited);
   int NeedRead(int limited);
-
   
   void CloseConnection();
   int CanReconnect() const { return (m_connect && m_want_again && !m_retried) ? 1 : 0; }
@@ -203,7 +209,7 @@ class btPeer:public btBasic
   int Need_Remote_Data() const;
   int Need_Local_Data() const;
 
-  int PutPending();
+  void PutPending();
 
   int NeedPrefetch() const;
   void Prefetch(time_t deadline);

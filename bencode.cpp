@@ -44,6 +44,10 @@ size_t buf_long(const char *b,size_t len,char beginchar,char endchar,int64_t *pi
     p++; len--;
   }
 
+  if( *p == '-'){
+    p++; len--;
+  }
+
   for(psave = p; len && isdigit(*p); p++,len--) ;
 
   if(!len || MAX_INT_SIZ < (p - psave) || *p != endchar) return 0;
@@ -174,15 +178,10 @@ size_t decode_query(const char *b,size_t len,const char *keylist,const char **ps
 size_t bencode_buf(const char *buf,size_t len,FILE *fp)
 {
   char slen[MAX_INT_SIZ];
-  char *b;
+
   if( MAX_INT_SIZ <= snprintf(slen, MAX_INT_SIZ, "%d:", (int)len) ) return 0;
   if( fwrite( slen, strlen(slen), 1, fp) != 1) return 0;
-  b = new char[len + strlen(slen)];
-#ifndef WINDOWS
-  if( !b ) return 0;
-#endif
-  if( fwrite(buf, len, 1, fp) != 1 ){ delete []b; return 0;}
-  delete []b;
+  if( fwrite(buf, len, 1, fp) != 1 ) return 0;
   return 1;
 }
 
@@ -191,11 +190,12 @@ size_t bencode_str(const char *str, FILE *fp)
   return bencode_buf(str, strlen(str), fp);
 }
 
-size_t bencode_int(const int integer, FILE *fp)
+size_t bencode_int(const uint64_t integer, FILE *fp)
 {
   char buf[MAX_INT_SIZ];
   if( EOF == fputc('i', fp)) return 0;
-  if( MAX_INT_SIZ <= snprintf(buf, MAX_INT_SIZ, "%lu", (unsigned long)integer) )
+  if( MAX_INT_SIZ <=
+      snprintf(buf, MAX_INT_SIZ, "%llu", (unsigned long long)integer) )
     return 0;
   if( fwrite(buf, strlen(buf), 1, fp) != 1 ) return 0;
   return (EOF == fputc('e', fp)) ? 0: 1;
@@ -237,22 +237,28 @@ size_t bencode_path2list(const char *pathname, FILE *fp)
   return bencode_end_dict_list(fp);
 }
 
-size_t decode_list2path(const char *b, size_t n, char *pathname)
+size_t decode_list2path(const char *b, size_t n, char *pathname, size_t maxlen)
 {
   const char *pb = b;
   const char *s = (char *) 0;
+  const char *endmax = pathname + maxlen - 1;
   size_t r,q;
 
   if( 'l' != *pb ) return 0;
   pb++;
   n--;
   if( !n ) return 0;
-  for(; n;){
+  while( n && pathname < endmax ){
     if(!(r = buf_str(pb, n, &s, &q)) ) return 0;
+    if( q >= maxlen ) return 0;
     memcpy(pathname, s, q);
     pathname += q;
-    pb += r; n -= r; 
-    if( 'e' != *pb ){*pathname = PATH_SP, pathname++;} else break;
+    maxlen -= q;
+    pb += r;
+    n -= r; 
+    if( 'e' == *pb ) break;
+    if( pathname >= endmax ) return 0;
+    *pathname++ = PATH_SP;
   }
   *pathname = '\0';
   return (pb - b + 1);

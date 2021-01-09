@@ -26,13 +26,10 @@
 #define CTCS_PASS_SIZE 21
 
 struct ctstatus {
-  size_t seeders, leechers, nhave, ntotal, dlrate, ulrate,
-    dlimit, ulimit, cacheused;
-  uint64_t dltotal, ultotal;
+  size_t dlrate, ulrate, dlimit, ulimit;
 
   ctstatus(){
-    seeders=leechers=nhave=ntotal=dlrate=ulrate=dltotal=
-    ultotal=dlimit=ulimit=cacheused = 0;
+    dlrate=ulrate=dlimit=ulimit = 0;
   }
 };
 
@@ -76,21 +73,17 @@ class Ctcs
   int Send_Protocol();
   int Send_Auth();
   int Send_Torrent(const unsigned char *peerid, char *torrent);
-  int Report_Status(size_t seeders, size_t leechers, size_t nhave,
-    size_t ntotal, size_t dlrate, size_t ulrate,
-    uint64_t dltotal, uint64_t ultotal, size_t dlimit, size_t ulimit,
-    size_t cacheused);
+  int Report_Status();
   int Send_Status();
   int Send_bw();
   int Send_Config();
-  int Set_Config(char *msgbuf);
+  int Set_Config(const char *msgbuf);
   int Send_Detail();
   int Send_Peers();
   int Send_Info(int sev, const char *info);
   int IntervalCheck(fd_set *rfdp, fd_set *wfdp);
   int SocketReady(fd_set *rfdp, fd_set *wfdp, int *nfds,
     fd_set *rfdnextp, fd_set *wfdnextp);
-  void RestartTracker();
 
   SOCKET GetSocket() { return m_sock; }
   unsigned char GetStatus() { return m_status;}

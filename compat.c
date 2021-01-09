@@ -6,9 +6,11 @@
 
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
+#include <stdlib.h>
 #endif
 
 #include "compat.h"
+
 #ifndef HAVE_CLOCK_GETTIME
 int clock_gettime(clockid_t clock_id, struct timespec *tp)
 {
@@ -29,6 +31,7 @@ int clock_gettime(clockid_t clock_id, struct timespec *tp)
 }
 #endif
 
+
 #ifndef HAVE_VSNPRINTF
 int vsnprintf(char *str, size_t size, const char *format, va_list ap)
 {
@@ -42,6 +45,7 @@ int vsnprintf(char *str, size_t size, const char *format, va_list ap)
   return r;
 }
 #endif
+
 
 #ifndef HAVE_SNPRINTF
 int snprintf(char *str, size_t size, const char *format, ...)
@@ -85,6 +89,7 @@ char *strnstr(const char *haystack, const char *needle, size_t haystacklen)
 }
 #endif
 
+
 #ifndef HAVE_STRNCASECMP
 #include <ctype.h>
 int strncasecmp(const char *s1, const char *s2, size_t len)
@@ -113,6 +118,42 @@ int strncasecmp(const char *s1, const char *s2, size_t len)
 int strcasecmp(const char *s1, const char *s2)
 {
   return strncasecmp(s1, s2, strlen(s1));
+}
+#endif
+
+
+#ifndef HAVE_RANDOM
+long random(void)
+{
+  long result;
+  unsigned long maxlong = 0, i = RAND_MAX;
+
+  maxlong--;
+  maxlong /= 2;
+
+  result = (long)rand();
+  while( i < maxlong ){
+    result = (result * 2UL*(RAND_MAX+1UL)) | rand();
+    i *= 2UL*(RAND_MAX+1UL);
+  }
+  return (result < 0) ? -result : result;
+}
+
+void srandom(unsigned long seed)
+{
+  unsigned useed;
+
+  if( sizeof(seed) > sizeof(useed) ){
+    unsigned long mask = 0xffff;
+    int i = 2;
+    while( i < sizeof(useed) ){
+      mask = (mask << 16) | 0xffff;
+      i += 2;
+    }
+    useed = (unsigned)(seed & mask);
+  }else useed = seed;
+
+  srand(useed);
 }
 #endif
 

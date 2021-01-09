@@ -12,6 +12,10 @@
 #include <string.h>
 #include <dirent.h>
 
+#include <stdio.h>
+#include <string.h>
+#include "minIni.h"
+
 UI UI_Instance;
 
 //FIXME: Text on PSP is rendered 4px lower... wtf?
@@ -523,7 +527,16 @@ void UI::FullRedraw()
 char* UI::GetTorrentFromUser()
 {
 	static char file[2048]; // for returning the file name
-	sprintf(file, "./torrents/");
+	
+	const char inifile[] = "./ctorrentpsp.ini";
+	char str[1001];
+	long n;
+	
+	n = ini_gets("Path", "torrent_dir", "aap", str, 1000, inifile);
+	
+	
+	//sprintf(file, "./torrents/");
+	sprintf(file, str);
 	
 	DIR* dir = opendir(file);
 	struct dirent* entry;

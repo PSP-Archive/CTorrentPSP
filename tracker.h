@@ -48,16 +48,17 @@ class btTracker
   unsigned char m_f_boguspeercnt:1;
   unsigned char m_reserved:1;
 
-
-  time_t m_interval;		// 锟斤拷Tracker通锟脚碉拷时锟斤拷锟斤拷锟斤拷
+  time_t m_interval;		// 与Tracker通信的时间间隔
   time_t m_default_interval;		// interval that the tracker tells us to wait
-  time_t m_last_timestamp;	// 锟斤拷锟斤拷一锟轿成癸拷锟斤拷Tracker通锟脚碉拷时锟斤拷
+  time_t m_last_timestamp;	// 最后一次成功与Tracker通信的时间
   size_t m_connect_refuse_click;
 
   size_t m_ok_click;	// tracker ok response counter
   size_t m_peers_count;	// total number of peers
   size_t m_seeds_count;	// total number of seeds
   size_t m_prevpeers;	// number of peers previously seen
+  time_t m_report_time;
+  uint64_t m_totaldl, m_totalul, m_report_dl, m_report_ul;
 
   SOCKET m_sock;
   BufIo m_request_buffer, m_reponse_buffer;
@@ -65,6 +66,7 @@ class btTracker
   int _IPsin(char *h, int p, struct sockaddr_in *psin);
   int _s2sin(char *h,int p,struct sockaddr_in *psin);
   int _UpdatePeerList(char *buf,size_t bufsiz);
+  int IsPrivateAddress(uint32_t addr);
 
   int BuildBaseRequest();
   int Connect();
@@ -85,6 +87,7 @@ class btTracker
 
   SOCKET GetSocket() { return m_sock; }
 
+  void RestartTracker();
   void SetRestart() { m_f_restart = 1; }
   void ClearRestart() { m_f_restart = 0; }
   int IsRestarting() const { return m_f_restart; }
@@ -102,6 +105,12 @@ class btTracker
   void AdjustPeersCount() {
     if(m_f_boguspeercnt && m_peers_count) m_peers_count--; }
   time_t GetInterval() const { return m_default_interval; }
+
+  time_t GetReportTime() const { return m_report_time; }
+  uint64_t GetReportDL() const { return m_report_dl; }
+  uint64_t GetReportUL() const { return m_report_ul; }
+  void CountDL(size_t nbytes) { m_totaldl += nbytes; }
+  void CountUL(size_t nbytes) { m_totalul += nbytes; }
 };
 
 extern btTracker Tracker;

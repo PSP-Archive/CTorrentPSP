@@ -2,6 +2,181 @@
                         Enhanced CTorrent Change Log
      _________________________________________________________________
 
+   Changes for "dnh3.3.2" Release
+
+     * [1954631] Fixed incorrect ordering of dictionary keys in created
+       torrent metainfo file.
+     * Remove unneeded buffer allocation in bencode_buf.
+     * Insure appropriate file can be closed if needed.
+     * Fix double-cancel in StopDownload.
+     * Incorrectly set not_interested state in RequestPiece when it
+       should set m_standby, as there are still outstanding requests.
+     * Corrected a problem in choke oscillation handling.
+     * Avoid re-requesting the most recently requested piece from a peer,
+       to reduce choke oscillation impact.
+     * Set multpeer on choke oscillation, to accept the affected piece.
+     * Don't print file completion details with -c if no files existed.
+     * Set errno in low-level btfiles functions to facilitate better
+       error messages.
+     * Set ENOMEM on alloc failure in truncate routine
+     * Corrected some CTCS error handling, which could produce an
+       odd/incorrect message about sending the torrent.
+     * Fix CTCS/Console recursion loop triggered by a network problem,
+       eventually blowing out the stack.
+     * Remove the .bf file when -c is used. This prevents an old bitfield
+       state hanging around if the torrent is found to be complete.
+     * Indicate when a file is being created, even when trying to use
+       sparse files.
+     * Don't print file completion details when no data is present.
+     * Buffer was not freed when using -a (memory waste).
+     * Additional "now" time updates to correct timing flaws. Too many
+       disk accesses could be performed because the time was not being
+       updated between operations.
+     * Fix request URL encoding for non-ASCII locales.
+     * Cache management bug due to expiration during I/O. This could
+       manifest as a bad hash check or incomplete piece after download.
+     * Correction in cache aging of a piece.
+     * Console is unresponsive when downloading slowly (IsIdle problem).
+     _________________________________________________________________
+
+   Changes for "dnh3.3.1" Release
+
+   Bug Fixes
+     * [1941536] Fix restoration of terminal mode at exit.
+     * Handle errors from select(). (Could cause high CPU utilization and
+       unresponsiveness.)
+     * [1946210] Fix incorrect string allocation sizes. (Could cause
+       memory corruption or double-free errors.)
+     * Delete file I/O buffers at exit.
+     * Fix build warning from bitfield.cpp.
+     _________________________________________________________________
+
+   Changes for "dnh3.3" Release
+
+   Features and Performance
+     * Faster restart: Download of pieces that are known to be missing
+       can begin immediately.
+     * Added a workaround for the current lack of announce-list (multiple
+       trackers) support. If the torrent file contains an announce-list,
+       up to 9 alternate announce URLs (trackers) will be listed in the
+       torrent information. The -u option can be used to specify the
+       announce URL, either by number from the list of alternates or
+       directly as a string.
+     * Allow -X in conjunction with -c (for automated completion check).
+     * SO_REUSEADDR is now used when -p is specified, so that the client
+       can restart immediately on the given port.
+     * Daemon mode (-d) now closes the standard file descriptors and
+       reopens them to /dev/null. This complies with most people's
+       expectations of a daemon. If -d is specified twice, standard I/O
+       descriptors which are not a terminal (i.e. which have been
+       redirected) are kept intact as was the previous behavior. This
+       allows a fully detached process from which output can be captured.
+     * Add tracker update & restart actions (from CTCS) to operator menu.
+     * When creating a torrent, the following new options are available:
+    -p              Private (disable peer exchange)
+    -c comment      Include a comment/description
+       Note that -t must now be the first option given when creating a
+       torrent.
+     * A new option -I allows specifying the public IP address which the
+       tracker should distribute to peers.
+     * Enabled changing CTCS server from CTCS.
+     * When changing bandwidth limits from the console, remind the user
+       that CTCS may override changes.
+     * It is now possible to stop using CTCS from the console. Use the
+       "S" option and give a single colon (:) as the input.
+     * The "private", "comment", and "created by" fields are now
+       recognized and printed (if present) when the torrent meta info is
+       shown.
+     * Improved on-screen advisement regarding bit field file at startup.
+     * Tracker reporting data has been added to the detailed status, as
+       well as failed hashes, duplicate blocks, and unwanted blocks
+       counts.
+     * CPU usage is printed to Verbose output when Detailed Status is
+       requested from operator menu.
+     * Input is now turned off if not needed. This makes things behave
+       better if, for example, -x is used and the output piped to less.
+     * Attempt to avoid wrapping/scrolling when printing the status line
+       on a narrow terminal/window.
+     * A couple of optimizations analyzing peer bitfields.
+     * Bitfield operation optimizations.
+     * Efficiency improvement in PendingQueue functions.
+     * Improved GetDownloads efficiency.
+     * Reduced memory usage when seeding, download is stalled, or using
+       -x.
+     * Rate measurement calculations are now cached and recomputed only
+       when necessary.
+     * Improved methods of determining local IP address.
+     * The "ip" field is sent in the tracker address if the public IP
+       address was determined.
+     * Reduction of download duplication and improvement of tracker
+       reporting
+          + Improved piece reassignment.
+               o Reassign only if proposer's queue is empty.
+               o Consider any piece in the slower peer's queue.
+               o Improve download rate comparison method.
+               o Allow reassignment in endgame mode.
+          + Improved data counting and reporting.
+          + Hash check failure handling improvement
+               o If hash check fails, don't re-request the same piece
+                 from that peer.
+               o Increased weight of hash failure.
+               o Reduced peer error threshold.
+          + Improved randomness of CopyShuffle.
+          + Reduce duplicate data receipt
+               o Avoid duplication to high-latency/slow peers.
+               o When duplicating or reassigning requests, move immediate
+                 incoming slices to the end of the queue.
+          + Accept cancelled data from a peer if still needed.
+          + Duplicate request management
+               o Spread request duplication more evenly among outstanding
+                 pieces.
+               o Limit duplicate requests for a piece to the number of
+                 outstanding slices.
+               o Track the number of pieces requested as duplicates.
+               o Track pieces for which slices have been requested or
+                 received from multiple peers.
+          + Detect a duplication inconsistency in Pending.
+          + Improve choke oscillation detection and handling.
+          + HealthCheck improvement to reduce redundant receipts from
+            high latency peers.
+     * Support systems that do not provide random(3).
+
+   Bug Fixes
+     * Completed torrent could be reported as incomplete when restarting.
+       This was the reported/observed symptom; potentially it could also
+       be seen as failed hash-check of downloaded pieces or uploading of
+       bad data (failed hash-check at a remote peer).
+     * Fixed crash which could happen when sending data without an upload
+       limit.
+     * Surplus bits in the last byte of a bitfield could be set.
+     * Don't say "stalled" if still checking and nothing to download yet.
+     * Don't allow the -n or -X options (from CTCS and console) if
+       download is already complete.
+     * Correct handling if -s is used with a single-file torrent and a
+       directory of the specified name exists.
+     * Exit with error if tracker setup fails.
+     * Don't print an error when a known but inactive configuration
+       option is received from CTCS.
+     * Check for bad/invalid input from CTCS.
+     * Fixed a bug that could corrupt (loop) the peer list, resulting in
+       a hard-loop (nonresponsiveness).
+     * Exit (with error) after discovering that a file is not the correct
+       size at startup.
+     * Fixed a bug with input prompting (affects CTCS password entry).
+     * [1886549] Fix torrent creation with files over 4GB.
+     * Improved CTCS status updating, and accuracy for end-of-download
+       and terminating cases.
+     * Upload/download now stops upon initiating Quit.
+     * Improved cache allocation when download stalls or unstalls.
+     * [1863204] Skip I/O for zero-length files.
+     * Condition reversal in counting hash-check error against a peer.
+
+   Code Cleanup
+     * Removed declaration of unused variable cfg_max_bandwidth.
+     * Rearrangement of some bitfield functions & declarations.
+     * Consolidate peer error counting and handling into PeerError.
+     _________________________________________________________________
+
    Changes for "dnh3.2" Release
 
    Features and Performance

@@ -13,7 +13,7 @@ extern size_t cfg_req_slice_size;
 extern size_t cfg_req_queue_length;
 #define MAX_PF_LEN 8
 #define PEER_ID_LEN 20
-#define PEER_PFX "-CD0302-"
+#define PEER_PFX "-CD0303-"
 
 extern char *cfg_user_agent;	// HTTP header
 
@@ -26,11 +26,11 @@ extern unsigned long cfg_listen_ip;
 extern int cfg_listen_port;
 extern int cfg_max_listen_port;
 extern int cfg_min_listen_port;
+extern char *cfg_public_ip;
 
 extern time_t cfg_seed_hours;
 extern double cfg_seed_ratio;
 
-extern int cfg_max_bandwidth;
 extern int cfg_max_bandwidth_down;
 extern int cfg_max_bandwidth_up;
 
@@ -44,6 +44,7 @@ extern unsigned char arg_flg_force_seed_mode;
 extern unsigned char arg_flg_check_only;
 extern unsigned char arg_flg_exam_only;
 extern unsigned char arg_flg_make_torrent;
+extern unsigned char arg_flg_private;
 extern unsigned char arg_flg_convert_filenames;
 extern char *arg_file_to_download;
 extern unsigned char arg_verbose;
@@ -52,6 +53,7 @@ extern unsigned char arg_daemon;
 
 extern size_t arg_piece_length;
 extern char *arg_announce;
+extern char *arg_comment;
 
 extern char *arg_ctcs;
 extern char *arg_completion_exit;

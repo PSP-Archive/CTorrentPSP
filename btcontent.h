@@ -45,15 +45,18 @@ typedef struct _bfnode{
 
 class btContent
 {
-  //METAINFOï¿½ï¿½Ô±
+  //METAINFO³ÉÔ±
   char *m_announce;
   unsigned char *m_hash_table;
   unsigned char m_shake_buffer[68];
+  char *m_announcelist[9];
+  char *m_comment, *m_created_by;
 
   size_t m_hashtable_length;
   size_t m_piece_length;
   size_t m_npieces, m_check_piece;
   time_t m_create_date, m_seed_timestamp, m_start_timestamp;
+  size_t m_private;
 
   uint64_t m_left_bytes;
   btFiles m_btfiles;
@@ -67,7 +70,10 @@ class btContent
   BTFLUSH *m_flushq;
 
   BFNODE *m_filters, *m_current_filter;
-  
+
+  size_t m_prevdlrate;
+  size_t m_hash_failures, m_dup_blocks, m_unwanted_blocks;
+
   void _Set_InfoHash(unsigned char buf[20]);
   char* _file2mem(const char *fname, size_t *psiz);
   
@@ -91,7 +97,9 @@ class btContent
   BitField *pBMasterFilter;
   BitField *pBRefer;
   BitField *pBChecked;
+  BitField *pBMultPeer;
   char *global_piece_buffer;
+  size_t global_buffer_size;
   
   btContent();
   ~btContent();
@@ -149,7 +157,7 @@ class btContent
   void SetTmpFilter(int nfile, BitField *pFilter) const {
     m_btfiles.SetFilter(nfile, pFilter, m_piece_length);
   }
-
+  
   char *GetDataName() const { return m_btfiles.GetDataName(); }
 
   size_t GetNFiles() const { return m_btfiles.GetNFiles(); }
@@ -168,6 +176,13 @@ class btContent
 
   time_t GetStartTime() const { return m_start_timestamp; }
   time_t GetSeedTime() const { return m_seed_timestamp; }
+
+  size_t GetHashFailures() const { return m_hash_failures; }
+  size_t GetDupBlocks() const { return m_dup_blocks; }
+  size_t GetUnwantedBlocks() const { return m_unwanted_blocks; }
+  void CountHashFailure() { m_hash_failures++; }
+  void CountDupBlock(size_t len);
+  void CountUnwantedBlock() { m_unwanted_blocks++; }
 
   int IsFull() const { return pBF->IsFull(); }
   int Seeding() const;
